@@ -1655,12 +1655,14 @@ static void query_phy_status_page1(struct rtw_dev *rtwdev, u8 *phy_status,
 	else
 		rxsc = GET_PHY_STAT_P1_HT_RXSC(phy_status);
 
-	if (rxsc >= 9 && rxsc <= 12)
-		bw = RTW_CHANNEL_WIDTH_40;
-	else if (rxsc >= 13)
-		bw = RTW_CHANNEL_WIDTH_80;
-	else
+	if (rxsc == 0)
+		bw = rtwdev->hal.current_band_width;
+	else if (rxsc >= 1 && rxsc <= 8)
 		bw = RTW_CHANNEL_WIDTH_20;
+	else if (rxsc >= 9 && rxsc <= 12)
+		bw = RTW_CHANNEL_WIDTH_40;
+	else
+		bw = RTW_CHANNEL_WIDTH_80;
 
 	pkt_stat->rx_power[RF_PATH_A] = GET_PHY_STAT_P1_PWDB_A(phy_status) - 110;
 	pkt_stat->rx_power[RF_PATH_B] = GET_PHY_STAT_P1_PWDB_B(phy_status) - 110;
@@ -3168,8 +3170,8 @@ rtw8822c_phy_cck_pd_set_reg(struct rtw_dev *rtwdev,
 static void rtw8822c_phy_cck_pd_set(struct rtw_dev *rtwdev, u8 new_lvl)
 {
 	struct rtw_dm_info *dm_info = &rtwdev->dm_info;
-	s8 pd_lvl[4] = {2, 4, 6, 8};
-	s8 cs_lvl[4] = {2, 2, 2, 4};
+	s8 pd_lvl[CCK_PD_LV_MAX] = {0, 2, 4, 6, 8};
+	s8 cs_lvl[CCK_PD_LV_MAX] = {0, 2, 2, 2, 4};
 	u8 cur_lvl;
 	u8 nrx, bw;
 

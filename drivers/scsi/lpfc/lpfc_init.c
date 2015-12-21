@@ -40,6 +40,7 @@
 #include <linux/irq.h>
 #include <linux/bitops.h>
 #include <linux/crash_dump.h>
+#include <linux/cpuhotplug.h>
 
 #include <scsi/scsi.h>
 #include <scsi/scsi_device.h>
@@ -66,9 +67,13 @@
 #include "lpfc_version.h"
 #include "lpfc_ids.h"
 
+static enum cpuhp_state lpfc_cpuhp_state;
 /* Used when mapping IRQ vectors in a driver centric manner */
 static uint32_t lpfc_present_cpu;
 
+static void __lpfc_cpuhp_remove(struct lpfc_hba *phba);
+static void lpfc_cpuhp_remove(struct lpfc_hba *phba);
+static void lpfc_cpuhp_add(struct lpfc_hba *phba);
 static void lpfc_get_hba_model_desc(struct lpfc_hba *, uint8_t *, uint8_t *);
 static int lpfc_post_rcv_buf(struct lpfc_hba *);
 static int lpfc_sli4_queue_verify(struct lpfc_hba *);
@@ -1365,7 +1370,7 @@ lpfc_hb_timeout_handler(struct lpfc_hba *phba)
 	if (vports != NULL)
 		for (i = 0; i <= phba->max_vports && vports[i] != NULL; i++) {
 			lpfc_rcv_seq_check_edtov(vports[i]);
-			lpfc_fdmi_num_disc_check(vports[i]);
+			lpfc_fdmi_change_check(vports[i]);
 		}
 	lpfc_destroy_vport_work_array(phba, vports);
 
@@ -3387,6 +3392,8 @@ lpfc_online(struct lpfc_hba *phba)
 	if (phba->cfg_xri_rebalancing)
 		lpfc_create_multixri_pools(phba);
 
+	lpfc_cpuhp_add(phba);
+
 	lpfc_unblock_mgmt_io(phba);
 	return 0;
 }
@@ -3545,6 +3552,7 @@ lpfc_offline(struct lpfc_hba *phba)
 			spin_unlock_irq(shost->host_lock);
 		}
 	lpfc_destroy_vport_work_array(phba, vports);
+	__lpfc_cpuhp_remove(phba);
 
 	if (phba->cfg_xri_rebalancing)
 		lpfc_destroy_multixri_pools(phba);
@@ -6407,8 +6415,6 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	LPFC_MBOXQ_t *mboxq;
 	MAILBOX_t *mb;
 	int rc, i, max_buf_size;
-	uint8_t pn_page[LPFC_MAX_SUPPORTED_PAGES] = {0};
-	struct lpfc_mqe *mqe;
 	int longs;
 	int extra;
 	uint64_t wwn;
@@ -6531,7 +6537,7 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	/* Allocate device driver memory */
 	rc = lpfc_mem_alloc(phba, SGL_ALIGN_SZ);
 	if (rc)
-		return -ENOMEM;
+		goto out_destroy_workqueue;
 
 	/* IF Type 2 ports get initialized now. */
 	if (bf_get(lpfc_sli_intf_if_type, &phba->sli4_hba.sli_intf) >=
@@ -6631,32 +6637,6 @@ lpfc_sli4_driver_resource_setup(struct lpfc_hba *phba)
 	}
 
 	lpfc_nvme_mod_param_dep(phba);
-
-	/* Get the Supported Pages if PORT_CAPABILITIES is supported by port. */
-	lpfc_supported_pages(mboxq);
-	rc = lpfc_sli_issue_mbox(phba, mboxq, MBX_POLL);
-	if (!rc) {
-		mqe = &mboxq->u.mqe;
-		memcpy(&pn_page[0], ((uint8_t *)&mqe->un.supp_pages.word3),
-		       LPFC_MAX_SUPPORTED_PAGES);
-		for (i = 0; i < LPFC_MAX_SUPPORTED_PAGES; i++) {
-			switch (pn_page[i]) {
-			case LPFC_SLI4_PARAMETERS:
-				phba->sli4_hba.pc_sli4_params.supported = 1;
-				break;
-			default:
-				break;
-			}
-		}
-		/* Read the port's SLI4 Parameters capabilities if supported. */
-		if (phba->sli4_hba.pc_sli4_params.supported)
-			rc = lpfc_pc_sli4_params_get(phba, mboxq);
-		if (rc) {
-			mempool_free(mboxq, phba->mbox_mem_pool);
-			rc = -EIO;
-			goto out_free_bsmbx;
-		}
-	}
 
 	/*
 	 * Get sli4 parameters that override parameters from Port capabilities.
@@ -6931,6 +6911,9 @@ out_free_bsmbx:
 	lpfc_destroy_bootstrap_mbox(phba);
 out_free_mem:
 	lpfc_mem_free(phba);
+out_destroy_workqueue:
+	destroy_workqueue(phba->wq);
+	phba->wq = NULL;
 	return rc;
 }
 
@@ -9116,6 +9099,7 @@ lpfc_sli4_release_hdwq(struct lpfc_hba *phba)
 		/* Free the CQ/WQ corresponding to the Hardware Queue */
 		lpfc_sli4_queue_free(hdwq[idx].io_cq);
 		lpfc_sli4_queue_free(hdwq[idx].io_wq);
+		hdwq[idx].hba_eq = NULL;
 		hdwq[idx].io_cq = NULL;
 		hdwq[idx].io_wq = NULL;
 		if (phba->cfg_xpsgl && !phba->nvmet_support)
@@ -9159,6 +9143,8 @@ lpfc_sli4_queue_destroy(struct lpfc_hba *phba)
 		spin_lock_irq(&phba->hbalock);
 	}
 	spin_unlock_irq(&phba->hbalock);
+
+	lpfc_sli4_cleanup_poll_list(phba);
 
 	/* Release HBA eqs */
 	if (phba->sli4_hba.hdwq)
@@ -9376,8 +9362,7 @@ lpfc_sli4_queue_setup(struct lpfc_hba *phba)
 				"3250 QUERY_FW_CFG mailbox failed with status "
 				"x%x add_status x%x, mbx status x%x\n",
 				shdr_status, shdr_add_status, rc);
-		if (rc != MBX_TIMEOUT)
-			mempool_free(mboxq, phba->mbox_mem_pool);
+		mempool_free(mboxq, phba->mbox_mem_pool);
 		rc = -ENXIO;
 		goto out_error;
 	}
@@ -9393,8 +9378,7 @@ lpfc_sli4_queue_setup(struct lpfc_hba *phba)
 			"ulp1_mode:x%x\n", phba->sli4_hba.fw_func_mode,
 			phba->sli4_hba.ulp0_mode, phba->sli4_hba.ulp1_mode);
 
-	if (rc != MBX_TIMEOUT)
-		mempool_free(mboxq, phba->mbox_mem_pool);
+	mempool_free(mboxq, phba->mbox_mem_pool);
 
 	/*
 	 * Set up HBA Event Queues (EQs)
@@ -9990,8 +9974,7 @@ lpfc_pci_function_reset(struct lpfc_hba *phba)
 		shdr_status = bf_get(lpfc_mbox_hdr_status, &shdr->response);
 		shdr_add_status = bf_get(lpfc_mbox_hdr_add_status,
 					 &shdr->response);
-		if (rc != MBX_TIMEOUT)
-			mempool_free(mboxq, phba->mbox_mem_pool);
+		mempool_free(mboxq, phba->mbox_mem_pool);
 		if (shdr_status || shdr_add_status || rc) {
 			lpfc_printf_log(phba, KERN_ERR, LOG_INIT,
 					"0495 SLI_FUNCTION_RESET mailbox "
@@ -10243,7 +10226,7 @@ lpfc_sli4_pci_mem_setup(struct lpfc_hba *phba)
 				goto out_iounmap_all;
 		} else {
 			error = -ENOMEM;
-			goto out_iounmap_all;
+			goto out_iounmap_ctrl;
 		}
 	}
 
@@ -10261,7 +10244,7 @@ lpfc_sli4_pci_mem_setup(struct lpfc_hba *phba)
 			dev_err(&pdev->dev,
 			   "ioremap failed for SLI4 HBA dpp registers.\n");
 			error = -ENOMEM;
-			goto out_iounmap_ctrl;
+			goto out_iounmap_all;
 		}
 		phba->pci_bar4_memmap_p = phba->sli4_hba.dpp_regs_memmap_p;
 	}
@@ -10286,9 +10269,11 @@ lpfc_sli4_pci_mem_setup(struct lpfc_hba *phba)
 	return 0;
 
 out_iounmap_all:
-	iounmap(phba->sli4_hba.drbl_regs_memmap_p);
+	if (phba->sli4_hba.drbl_regs_memmap_p)
+		iounmap(phba->sli4_hba.drbl_regs_memmap_p);
 out_iounmap_ctrl:
-	iounmap(phba->sli4_hba.ctrl_regs_memmap_p);
+	if (phba->sli4_hba.ctrl_regs_memmap_p)
+		iounmap(phba->sli4_hba.ctrl_regs_memmap_p);
 out_iounmap_conf:
 	iounmap(phba->sli4_hba.conf_regs_memmap_p);
 
@@ -10963,6 +10948,170 @@ found_any:
 }
 
 /**
+ * lpfc_cpuhp_get_eq
+ *
+ * @phba:   pointer to lpfc hba data structure.
+ * @cpu:    cpu going offline
+ * @eqlist:
+ */
+static void
+lpfc_cpuhp_get_eq(struct lpfc_hba *phba, unsigned int cpu,
+		  struct list_head *eqlist)
+{
+	struct lpfc_vector_map_info *map;
+	const struct cpumask *maskp;
+	struct lpfc_queue *eq;
+	unsigned int i;
+	cpumask_t tmp;
+	u16 idx;
+
+	for (idx = 0; idx < phba->cfg_irq_chann; idx++) {
+		maskp = pci_irq_get_affinity(phba->pcidev, idx);
+		if (!maskp)
+			continue;
+		/*
+		 * if irq is not affinitized to the cpu going
+		 * then we don't need to poll the eq attached
+		 * to it.
+		 */
+		if (!cpumask_and(&tmp, maskp, cpumask_of(cpu)))
+			continue;
+		/* get the cpus that are online and are affini-
+		 * tized to this irq vector.  If the count is
+		 * more than 1 then cpuhp is not going to shut-
+		 * down this vector.  Since this cpu has not
+		 * gone offline yet, we need >1.
+		 */
+		cpumask_and(&tmp, maskp, cpu_online_mask);
+		if (cpumask_weight(&tmp) > 1)
+			continue;
+
+		/* Now that we have an irq to shutdown, get the eq
+		 * mapped to this irq.  Note: multiple hdwq's in
+		 * the software can share an eq, but eventually
+		 * only eq will be mapped to this vector
+		 */
+		for_each_possible_cpu(i) {
+			map = &phba->sli4_hba.cpu_map[i];
+			if (!(map->irq == pci_irq_vector(phba->pcidev, idx)))
+				continue;
+			eq = phba->sli4_hba.hdwq[map->hdwq].hba_eq;
+			list_add(&eq->_poll_list, eqlist);
+			/* 1 is good enough. others will be a copy of this */
+			break;
+		}
+	}
+}
+
+static void __lpfc_cpuhp_remove(struct lpfc_hba *phba)
+{
+	if (phba->sli_rev != LPFC_SLI_REV4)
+		return;
+
+	cpuhp_state_remove_instance_nocalls(lpfc_cpuhp_state,
+					    &phba->cpuhp);
+	/*
+	 * unregistering the instance doesn't stop the polling
+	 * timer. Wait for the poll timer to retire.
+	 */
+	synchronize_rcu();
+	del_timer_sync(&phba->cpuhp_poll_timer);
+}
+
+static void lpfc_cpuhp_remove(struct lpfc_hba *phba)
+{
+	if (phba->pport->fc_flag & FC_OFFLINE_MODE)
+		return;
+
+	__lpfc_cpuhp_remove(phba);
+}
+
+static void lpfc_cpuhp_add(struct lpfc_hba *phba)
+{
+	if (phba->sli_rev != LPFC_SLI_REV4)
+		return;
+
+	rcu_read_lock();
+
+	if (!list_empty(&phba->poll_list)) {
+		timer_setup(&phba->cpuhp_poll_timer, lpfc_sli4_poll_hbtimer, 0);
+		mod_timer(&phba->cpuhp_poll_timer,
+			  jiffies + msecs_to_jiffies(LPFC_POLL_HB));
+	}
+
+	rcu_read_unlock();
+
+	cpuhp_state_add_instance_nocalls(lpfc_cpuhp_state,
+					 &phba->cpuhp);
+}
+
+static int __lpfc_cpuhp_checks(struct lpfc_hba *phba, int *retval)
+{
+	if (phba->pport->load_flag & FC_UNLOADING) {
+		*retval = -EAGAIN;
+		return true;
+	}
+
+	if (phba->sli_rev != LPFC_SLI_REV4) {
+		*retval = 0;
+		return true;
+	}
+
+	/* proceed with the hotplug */
+	return false;
+}
+
+static int lpfc_cpu_offline(unsigned int cpu, struct hlist_node *node)
+{
+	struct lpfc_hba *phba = hlist_entry_safe(node, struct lpfc_hba, cpuhp);
+	struct lpfc_queue *eq, *next;
+	LIST_HEAD(eqlist);
+	int retval;
+
+	if (!phba) {
+		WARN_ONCE(!phba, "cpu: %u. phba:NULL", raw_smp_processor_id());
+		return 0;
+	}
+
+	if (__lpfc_cpuhp_checks(phba, &retval))
+		return retval;
+
+	lpfc_cpuhp_get_eq(phba, cpu, &eqlist);
+
+	/* start polling on these eq's */
+	list_for_each_entry_safe(eq, next, &eqlist, _poll_list) {
+		list_del_init(&eq->_poll_list);
+		lpfc_sli4_start_polling(eq);
+	}
+
+	return 0;
+}
+
+static int lpfc_cpu_online(unsigned int cpu, struct hlist_node *node)
+{
+	struct lpfc_hba *phba = hlist_entry_safe(node, struct lpfc_hba, cpuhp);
+	struct lpfc_queue *eq, *next;
+	unsigned int n;
+	int retval;
+
+	if (!phba) {
+		WARN_ONCE(!phba, "cpu: %u. phba:NULL", raw_smp_processor_id());
+		return 0;
+	}
+
+	if (__lpfc_cpuhp_checks(phba, &retval))
+		return retval;
+
+	list_for_each_entry_safe(eq, next, &phba->poll_list, _poll_list) {
+		n = lpfc_find_cpu_handle(phba, eq->hdwq, LPFC_FIND_BY_HDWQ);
+		if (n == cpu)
+			lpfc_sli4_stop_polling(eq);
+	}
+
+	return 0;
+}
+
+/**
  * lpfc_sli4_enable_msix - Enable MSI-X interrupt mode to SLI-4 device
  * @phba: pointer to lpfc hba data structure.
  *
@@ -11367,6 +11516,10 @@ lpfc_sli4_hba_unset(struct lpfc_hba *phba)
 	/* Wait for completion of device XRI exchange busy */
 	lpfc_sli4_xri_exchange_busy_wait(phba);
 
+	/* per-phba callback de-registration for hotplug event */
+	if (phba->pport)
+		lpfc_cpuhp_remove(phba);
+
 	/* Disable PCI subsystem interrupt */
 	lpfc_sli4_disable_intr(phba);
 
@@ -11396,78 +11549,6 @@ lpfc_sli4_hba_unset(struct lpfc_hba *phba)
 	/* Stop the SLI4 device port */
 	if (phba->pport)
 		phba->pport->work_port_events = 0;
-}
-
- /**
- * lpfc_pc_sli4_params_get - Get the SLI4_PARAMS port capabilities.
- * @phba: Pointer to HBA context object.
- * @mboxq: Pointer to the mailboxq memory for the mailbox command response.
- *
- * This function is called in the SLI4 code path to read the port's
- * sli4 capabilities.
- *
- * This function may be be called from any context that can block-wait
- * for the completion.  The expectation is that this routine is called
- * typically from probe_one or from the online routine.
- **/
-int
-lpfc_pc_sli4_params_get(struct lpfc_hba *phba, LPFC_MBOXQ_t *mboxq)
-{
-	int rc;
-	struct lpfc_mqe *mqe;
-	struct lpfc_pc_sli4_params *sli4_params;
-	uint32_t mbox_tmo;
-
-	rc = 0;
-	mqe = &mboxq->u.mqe;
-
-	/* Read the port's SLI4 Parameters port capabilities */
-	lpfc_pc_sli4_params(mboxq);
-	if (!phba->sli4_hba.intr_enable)
-		rc = lpfc_sli_issue_mbox(phba, mboxq, MBX_POLL);
-	else {
-		mbox_tmo = lpfc_mbox_tmo_val(phba, mboxq);
-		rc = lpfc_sli_issue_mbox_wait(phba, mboxq, mbox_tmo);
-	}
-
-	if (unlikely(rc))
-		return 1;
-
-	sli4_params = &phba->sli4_hba.pc_sli4_params;
-	sli4_params->if_type = bf_get(if_type, &mqe->un.sli4_params);
-	sli4_params->sli_rev = bf_get(sli_rev, &mqe->un.sli4_params);
-	sli4_params->sli_family = bf_get(sli_family, &mqe->un.sli4_params);
-	sli4_params->featurelevel_1 = bf_get(featurelevel_1,
-					     &mqe->un.sli4_params);
-	sli4_params->featurelevel_2 = bf_get(featurelevel_2,
-					     &mqe->un.sli4_params);
-	sli4_params->proto_types = mqe->un.sli4_params.word3;
-	sli4_params->sge_supp_len = mqe->un.sli4_params.sge_supp_len;
-	sli4_params->if_page_sz = bf_get(if_page_sz, &mqe->un.sli4_params);
-	sli4_params->rq_db_window = bf_get(rq_db_window, &mqe->un.sli4_params);
-	sli4_params->loopbk_scope = bf_get(loopbk_scope, &mqe->un.sli4_params);
-	sli4_params->eq_pages_max = bf_get(eq_pages, &mqe->un.sli4_params);
-	sli4_params->eqe_size = bf_get(eqe_size, &mqe->un.sli4_params);
-	sli4_params->cq_pages_max = bf_get(cq_pages, &mqe->un.sli4_params);
-	sli4_params->cqe_size = bf_get(cqe_size, &mqe->un.sli4_params);
-	sli4_params->mq_pages_max = bf_get(mq_pages, &mqe->un.sli4_params);
-	sli4_params->mqe_size = bf_get(mqe_size, &mqe->un.sli4_params);
-	sli4_params->mq_elem_cnt = bf_get(mq_elem_cnt, &mqe->un.sli4_params);
-	sli4_params->wq_pages_max = bf_get(wq_pages, &mqe->un.sli4_params);
-	sli4_params->wqe_size = bf_get(wqe_size, &mqe->un.sli4_params);
-	sli4_params->rq_pages_max = bf_get(rq_pages, &mqe->un.sli4_params);
-	sli4_params->rqe_size = bf_get(rqe_size, &mqe->un.sli4_params);
-	sli4_params->hdr_pages_max = bf_get(hdr_pages, &mqe->un.sli4_params);
-	sli4_params->hdr_size = bf_get(hdr_size, &mqe->un.sli4_params);
-	sli4_params->hdr_pp_align = bf_get(hdr_pp_align, &mqe->un.sli4_params);
-	sli4_params->sgl_pages_max = bf_get(sgl_pages, &mqe->un.sli4_params);
-	sli4_params->sgl_pp_align = bf_get(sgl_pp_align, &mqe->un.sli4_params);
-
-	/* Make sure that sge_supp_len can be handled by the driver */
-	if (sli4_params->sge_supp_len > LPFC_MAX_SGE_SIZE)
-		sli4_params->sge_supp_len = LPFC_MAX_SGE_SIZE;
-
-	return rc;
 }
 
 /**
@@ -11528,7 +11609,8 @@ lpfc_get_sli4_parameters(struct lpfc_hba *phba, LPFC_MBOXQ_t *mboxq)
 	else
 		phba->sli3_options &= ~LPFC_SLI4_PHWQ_ENABLED;
 	sli4_params->sge_supp_len = mbx_sli4_parameters->sge_supp_len;
-	sli4_params->loopbk_scope = bf_get(loopbk_scope, mbx_sli4_parameters);
+	sli4_params->loopbk_scope = bf_get(cfg_loopbk_scope,
+					   mbx_sli4_parameters);
 	sli4_params->oas_supported = bf_get(cfg_oas, mbx_sli4_parameters);
 	sli4_params->cqv = bf_get(cfg_cqv, mbx_sli4_parameters);
 	sli4_params->mqv = bf_get(cfg_mqv, mbx_sli4_parameters);
@@ -12445,7 +12527,7 @@ out:
 int
 lpfc_sli4_request_firmware_update(struct lpfc_hba *phba, uint8_t fw_upgrade)
 {
-	uint8_t file_name[ELX_MODEL_NAME_SIZE];
+	char file_name[ELX_FW_NAME_SIZE] = {0};
 	int ret;
 	const struct firmware *fw;
 
@@ -12454,7 +12536,7 @@ lpfc_sli4_request_firmware_update(struct lpfc_hba *phba, uint8_t fw_upgrade)
 	    LPFC_SLI_INTF_IF_TYPE_2)
 		return -EPERM;
 
-	snprintf(file_name, ELX_MODEL_NAME_SIZE, "%s.grp", phba->ModelName);
+	scnprintf(file_name, sizeof(file_name), "%s.grp", phba->ModelName);
 
 	if (fw_upgrade == INT_FW_UPGRADE) {
 		ret = request_firmware_nowait(THIS_MODULE, FW_ACTION_HOTPLUG,
@@ -12631,6 +12713,9 @@ lpfc_pci_probe_one_s4(struct pci_dev *pdev, const struct pci_device_id *pid)
 
 	/* Enable RAS FW log support */
 	lpfc_sli4_ras_setup(phba);
+
+	INIT_LIST_HEAD(&phba->poll_list);
+	cpuhp_state_add_instance_nocalls(lpfc_cpuhp_state, &phba->cpuhp);
 
 	return 0;
 
@@ -13450,11 +13535,24 @@ lpfc_init(void)
 	/* Initialize in case vector mapping is needed */
 	lpfc_present_cpu = num_present_cpus();
 
+	error = cpuhp_setup_state_multi(CPUHP_AP_ONLINE_DYN,
+					"lpfc/sli4:online",
+					lpfc_cpu_online, lpfc_cpu_offline);
+	if (error < 0)
+		goto cpuhp_failure;
+	lpfc_cpuhp_state = error;
+
 	error = pci_register_driver(&lpfc_driver);
-	if (error) {
-		fc_release_transport(lpfc_transport_template);
-		fc_release_transport(lpfc_vport_transport_template);
-	}
+	if (error)
+		goto unwind;
+
+	return error;
+
+unwind:
+	cpuhp_remove_multi_state(lpfc_cpuhp_state);
+cpuhp_failure:
+	fc_release_transport(lpfc_transport_template);
+	fc_release_transport(lpfc_vport_transport_template);
 
 	return error;
 }
@@ -13471,6 +13569,7 @@ lpfc_exit(void)
 {
 	misc_deregister(&lpfc_mgmt_dev);
 	pci_unregister_driver(&lpfc_driver);
+	cpuhp_remove_multi_state(lpfc_cpuhp_state);
 	fc_release_transport(lpfc_transport_template);
 	fc_release_transport(lpfc_vport_transport_template);
 	idr_destroy(&lpfc_hba_index);

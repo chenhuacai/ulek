@@ -131,13 +131,12 @@ static void s2idle_loop(void)
 	 * to avoid them upfront.
 	 */
 	for (;;) {
-		if (s2idle_ops && s2idle_ops->wake)
-			s2idle_ops->wake();
-
-		if (pm_wakeup_pending())
+		if (s2idle_ops && s2idle_ops->wake) {
+			if (s2idle_ops->wake())
+				break;
+		} else if (pm_wakeup_pending()) {
 			break;
-
-		pm_wakeup_clear(false);
+		}
 
 		s2idle_enter();
 	}
@@ -188,6 +187,7 @@ static int __init mem_sleep_default_setup(char *str)
 		if (mem_sleep_labels[state] &&
 		    !strcmp(str, mem_sleep_labels[state])) {
 			mem_sleep_default = state;
+			mem_sleep_current = state;
 			break;
 		}
 

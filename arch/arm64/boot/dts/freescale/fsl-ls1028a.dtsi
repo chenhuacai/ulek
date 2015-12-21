@@ -65,7 +65,7 @@
 		};
 	};
 
-	sysclk: clock-sysclk {
+	sysclk: sysclk {
 		compatible = "fixed-clock";
 		#clock-cells = <0>;
 		clock-frequency = <100000000>;
@@ -102,8 +102,8 @@
 
 	reboot {
 		compatible ="syscon-reboot";
-		regmap = <&dcfg>;
-		offset = <0xb0>;
+		regmap = <&rst>;
+		offset = <0>;
 		mask = <0x02>;
 	};
 
@@ -151,14 +151,20 @@
 		ddr: memory-controller@1080000 {
 			compatible = "fsl,qoriq-memory-controller";
 			reg = <0x0 0x1080000 0x0 0x1000>;
-			interrupts = <GIC_SPI 144 IRQ_TYPE_LEVEL_HIGH>;
-			big-endian;
+			interrupts = <GIC_SPI 17 IRQ_TYPE_LEVEL_HIGH>;
+			little-endian;
 		};
 
 		dcfg: syscon@1e00000 {
 			compatible = "fsl,ls1028a-dcfg", "syscon";
 			reg = <0x0 0x1e00000 0x0 0x10000>;
-			big-endian;
+			little-endian;
+		};
+
+		rst: syscon@1e60000 {
+			compatible = "syscon";
+			reg = <0x0 0x1e60000 0x0 0x10000>;
+			little-endian;
 		};
 
 		scfg: syscon@1fc0000 {
@@ -278,6 +284,24 @@
 			broken-cd;
 			little-endian;
 			bus-width = <4>;
+			status = "disabled";
+		};
+
+		can0: can@2180000 {
+			compatible = "fsl,ls1028ar1-flexcan", "fsl,lx2160ar1-flexcan";
+			reg = <0x0 0x2180000 0x0 0x10000>;
+			interrupts = <GIC_SPI 21 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&sysclk>, <&clockgen 4 1>;
+			clock-names = "ipg", "per";
+			status = "disabled";
+		};
+
+		can1: can@2190000 {
+			compatible = "fsl,ls1028ar1-flexcan", "fsl,lx2160ar1-flexcan";
+			reg = <0x0 0x2190000 0x0 0x10000>;
+			interrupts = <GIC_SPI 22 IRQ_TYPE_LEVEL_HIGH>;
+			clocks = <&sysclk>, <&clockgen 4 1>;
+			clock-names = "ipg", "per";
 			status = "disabled";
 		};
 
@@ -490,14 +514,14 @@
 			compatible = "arm,sp805", "arm,primecell";
 			reg = <0x0 0xc000000 0x0 0x1000>;
 			clocks = <&clockgen 4 15>, <&clockgen 4 15>;
-			clock-names = "apb_pclk", "wdog_clk";
+			clock-names = "wdog_clk", "apb_pclk";
 		};
 
 		cluster1_core1_watchdog: watchdog@c010000 {
 			compatible = "arm,sp805", "arm,primecell";
 			reg = <0x0 0xc010000 0x0 0x1000>;
 			clocks = <&clockgen 4 15>, <&clockgen 4 15>;
-			clock-names = "apb_pclk", "wdog_clk";
+			clock-names = "wdog_clk", "apb_pclk";
 		};
 
 		sai1: audio-controller@f100000 {
@@ -567,7 +591,7 @@
 					       0x00010004 0x0000003d
 					       0x00010005 0x00000045
 					       0x00010006 0x0000004d
-					       0x00010007 0x00000045
+					       0x00010007 0x00000055
 					       0x00010008 0x0000005e
 					       0x00010009 0x00000066
 					       0x0001000a 0x0000006e
@@ -667,7 +691,7 @@
 			ethernet@0,4 {
 				compatible = "fsl,enetc-ptp";
 				reg = <0x000400 0 0 0 0>;
-				clocks = <&clockgen 4 0>;
+				clocks = <&clockgen 2 3>;
 				little-endian;
 			};
 		};

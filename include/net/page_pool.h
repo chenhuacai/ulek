@@ -70,7 +70,12 @@ struct page_pool_params {
 struct page_pool {
 	struct page_pool_params p;
 
-        u32 pages_state_hold_cnt;
+	struct delayed_work release_dw;
+	void (*disconnect)(void *);
+	unsigned long defer_start;
+	unsigned long defer_warn;
+
+	u32 pages_state_hold_cnt;
 
 	/*
 	 * Data structure for allocation side
@@ -129,25 +134,19 @@ inline enum dma_data_direction page_pool_get_dma_dir(struct page_pool *pool)
 
 struct page_pool *page_pool_create(const struct page_pool_params *params);
 
-void __page_pool_free(struct page_pool *pool);
-static inline void page_pool_free(struct page_pool *pool)
-{
-	/* When page_pool isn't compiled-in, net/core/xdp.c doesn't
-	 * allow registering MEM_TYPE_PAGE_POOL, but shield linker.
-	 */
 #ifdef CONFIG_PAGE_POOL
-	__page_pool_free(pool);
-#endif
-}
-
-/* Drivers use this instead of page_pool_free */
+void page_pool_destroy(struct page_pool *pool);
+void page_pool_use_xdp_mem(struct page_pool *pool, void (*disconnect)(void *));
+#else
 static inline void page_pool_destroy(struct page_pool *pool)
 {
-	if (!pool)
-		return;
-
-	page_pool_free(pool);
 }
+
+static inline void page_pool_use_xdp_mem(struct page_pool *pool,
+					 void (*disconnect)(void *))
+{
+}
+#endif
 
 /* Never call this directly, use helpers below */
 void __page_pool_put_page(struct page_pool *pool,
@@ -170,24 +169,6 @@ static inline void page_pool_recycle_direct(struct page_pool *pool,
 	__page_pool_put_page(pool, page, true);
 }
 
-/* API user MUST have disconnected alloc-side (not allowed to call
- * page_pool_alloc_pages()) before calling this.  The free-side can
- * still run concurrently, to handle in-flight packet-pages.
- *
- * A request to shutdown can fail (with false) if there are still
- * in-flight packet-pages.
- */
-bool __page_pool_request_shutdown(struct page_pool *pool);
-static inline bool page_pool_request_shutdown(struct page_pool *pool)
-{
-	bool safe_to_remove = false;
-
-#ifdef CONFIG_PAGE_POOL
-	safe_to_remove = __page_pool_request_shutdown(pool);
-#endif
-	return safe_to_remove;
-}
-
 /* Disconnects a page (from a page_pool).  API users can have a need
  * to disconnect a page (from a page_pool), to allow it to be used as
  * a regular page (that will eventually be returned to the normal
@@ -204,7 +185,17 @@ static inline void page_pool_release_page(struct page_pool *pool,
 
 static inline dma_addr_t page_pool_get_dma_addr(struct page *page)
 {
-	return page->dma_addr;
+	dma_addr_t ret = page->dma_addr[0];
+	if (sizeof(dma_addr_t) > sizeof(unsigned long))
+		ret |= (dma_addr_t)page->dma_addr[1] << 16 << 16;
+	return ret;
+}
+
+static inline void page_pool_set_dma_addr(struct page *page, dma_addr_t addr)
+{
+	page->dma_addr[0] = addr;
+	if (sizeof(dma_addr_t) > sizeof(unsigned long))
+		page->dma_addr[1] = upper_32_bits(addr);
 }
 
 static inline bool is_page_pool_compiled_in(void)
@@ -214,11 +205,6 @@ static inline bool is_page_pool_compiled_in(void)
 #else
 	return false;
 #endif
-}
-
-static inline void page_pool_get(struct page_pool *pool)
-{
-	refcount_inc(&pool->user_cnt);
 }
 
 static inline bool page_pool_put(struct page_pool *pool)

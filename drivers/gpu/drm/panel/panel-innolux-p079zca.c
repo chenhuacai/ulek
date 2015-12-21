@@ -487,9 +487,8 @@ static int innolux_panel_add(struct mipi_dsi_device *dsi,
 	if (IS_ERR(innolux->backlight))
 		return PTR_ERR(innolux->backlight);
 
-	drm_panel_init(&innolux->base);
-	innolux->base.funcs = &innolux_panel_funcs;
-	innolux->base.dev = dev;
+	drm_panel_init(&innolux->base, dev, &innolux_panel_funcs,
+		       DRM_MODE_CONNECTOR_DSI);
 
 	err = drm_panel_add(&innolux->base);
 	if (err < 0)
@@ -509,6 +508,7 @@ static void innolux_panel_del(struct innolux_panel *innolux)
 static int innolux_panel_probe(struct mipi_dsi_device *dsi)
 {
 	const struct panel_desc *desc;
+	struct innolux_panel *innolux;
 	int err;
 
 	desc = of_device_get_match_data(&dsi->dev);
@@ -520,7 +520,14 @@ static int innolux_panel_probe(struct mipi_dsi_device *dsi)
 	if (err < 0)
 		return err;
 
-	return mipi_dsi_attach(dsi);
+	err = mipi_dsi_attach(dsi);
+	if (err < 0) {
+		innolux = mipi_dsi_get_drvdata(dsi);
+		innolux_panel_del(innolux);
+		return err;
+	}
+
+	return 0;
 }
 
 static int innolux_panel_remove(struct mipi_dsi_device *dsi)

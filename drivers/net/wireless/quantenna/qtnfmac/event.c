@@ -171,8 +171,9 @@ qtnf_event_handle_bss_join(struct qtnf_vif *vif,
 		return -EPROTO;
 	}
 
-	pr_debug("VIF%u.%u: BSSID:%pM status:%u\n",
-		 vif->mac->macid, vif->vifid, join_info->bssid, status);
+	pr_debug("VIF%u.%u: BSSID:%pM chan:%u status:%u\n",
+		 vif->mac->macid, vif->vifid, join_info->bssid,
+		 le16_to_cpu(join_info->chan.chan.center_freq), status);
 
 	if (status != WLAN_STATUS_SUCCESS)
 		goto done;
@@ -181,7 +182,7 @@ qtnf_event_handle_bss_join(struct qtnf_vif *vif,
 	if (!cfg80211_chandef_valid(&chandef)) {
 		pr_warn("MAC%u.%u: bad channel freq=%u cf1=%u cf2=%u bw=%u\n",
 			vif->mac->macid, vif->vifid,
-			chandef.chan->center_freq,
+			chandef.chan ? chandef.chan->center_freq : 0,
 			chandef.center_freq1,
 			chandef.center_freq2,
 			chandef.width);
@@ -598,8 +599,10 @@ qtnf_event_handle_external_auth(struct qtnf_vif *vif,
 		return 0;
 
 	if (ev->ssid_len) {
-		memcpy(auth.ssid.ssid, ev->ssid, ev->ssid_len);
-		auth.ssid.ssid_len = ev->ssid_len;
+		int len = clamp_val(ev->ssid_len, 0, IEEE80211_MAX_SSID_LEN);
+
+		memcpy(auth.ssid.ssid, ev->ssid, len);
+		auth.ssid.ssid_len = len;
 	}
 
 	auth.key_mgmt_suite = le32_to_cpu(ev->akm_suite);

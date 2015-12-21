@@ -865,6 +865,7 @@ config SPI_XTENSA_XTFPGA
 config SPI_ZYNQ_QSPI
 	tristate "Xilinx Zynq QSPI controller"
 	depends on ARCH_ZYNQ || COMPILE_TEST
+	depends on SPI_MEM
 	help
 	  This enables support for the Zynq Quad SPI controller
 	  in master mode.
@@ -943,5 +944,8 @@ config SPI_SLAVE_SYSTEM_CONTROL
 	  off, halt, and suspend.
 
 endif # SPI_SLAVE
+
+config SPI_DYNAMIC
+	def_bool ACPI || OF_DYNAMIC || SPI_SLAVE
 
 endif # SPI

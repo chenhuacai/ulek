@@ -12,12 +12,17 @@ struct stackframe {
 
 static int unwind_frame_kernel(struct stackframe *frame)
 {
-	if (kstack_end((void *)frame->fp))
+	unsigned long low = (unsigned long)task_stack_page(current);
+	unsigned long high = low + THREAD_SIZE;
+
+	if (unlikely(frame->fp < low || frame->fp > high))
 		return -EPERM;
-	if (frame->fp & 0x3 || frame->fp < TASK_SIZE)
+
+	if (kstack_end((void *)frame->fp) || frame->fp & 0x3)
 		return -EPERM;
 
 	*frame = *(struct stackframe *)frame->fp;
+
 	if (__kernel_text_address(frame->lr)) {
 		int graph = 0;
 
@@ -81,10 +86,11 @@ static unsigned long user_backtrace(struct perf_callchain_entry_ctx *entry,
 void perf_callchain_user(struct perf_callchain_entry_ctx *entry,
 			 struct pt_regs *regs)
 {
+	struct perf_guest_info_callbacks *guest_cbs = perf_get_guest_cbs();
 	unsigned long fp = 0;
 
 	/* C-SKY does not support virtualization. */
-	if (perf_guest_cbs && perf_guest_cbs->is_in_guest())
+	if (guest_cbs && guest_cbs->is_in_guest())
 		return;
 
 	fp = regs->regs[4];
@@ -105,10 +111,11 @@ void perf_callchain_user(struct perf_callchain_entry_ctx *entry,
 void perf_callchain_kernel(struct perf_callchain_entry_ctx *entry,
 			   struct pt_regs *regs)
 {
+	struct perf_guest_info_callbacks *guest_cbs = perf_get_guest_cbs();
 	struct stackframe fr;
 
 	/* C-SKY does not support virtualization. */
-	if (perf_guest_cbs && perf_guest_cbs->is_in_guest()) {
+	if (guest_cbs && guest_cbs->is_in_guest()) {
 		pr_warn("C-SKY does not support perf in guest mode!");
 		return;
 	}

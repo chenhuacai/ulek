@@ -21,6 +21,7 @@
 #include <linux/property.h>
 #include <linux/mfd/axp20x.h>
 #include <linux/extcon.h>
+#include <linux/dmi.h>
 
 #define PS_STAT_VBUS_TRIGGER		BIT(0)
 #define PS_STAT_BAT_CHRG_DIR		BIT(2)
@@ -40,11 +41,11 @@
 #define VBUS_ISPOUT_CUR_LIM_1500MA	0x1	/* 1500mA */
 #define VBUS_ISPOUT_CUR_LIM_2000MA	0x2	/* 2000mA */
 #define VBUS_ISPOUT_CUR_NO_LIM		0x3	/* 2500mA */
-#define VBUS_ISPOUT_VHOLD_SET_MASK	0x31
+#define VBUS_ISPOUT_VHOLD_SET_MASK	0x38
 #define VBUS_ISPOUT_VHOLD_SET_BIT_POS	0x3
 #define VBUS_ISPOUT_VHOLD_SET_OFFSET	4000	/* 4000mV */
 #define VBUS_ISPOUT_VHOLD_SET_LSB_RES	100	/* 100mV */
-#define VBUS_ISPOUT_VHOLD_SET_4300MV	0x3	/* 4300mV */
+#define VBUS_ISPOUT_VHOLD_SET_4400MV	0x4	/* 4400mV */
 #define VBUS_ISPOUT_VBUS_PATH_DIS	BIT(7)
 
 #define CHRG_CCCV_CC_MASK		0xf		/* 4 bits */
@@ -167,18 +168,18 @@ static inline int axp288_charger_set_cv(struct axp288_chrg_info *info, int cv)
 	u8 reg_val;
 	int ret;
 
-	if (cv <= CV_4100MV) {
-		reg_val = CHRG_CCCV_CV_4100MV;
-		cv = CV_4100MV;
-	} else if (cv <= CV_4150MV) {
-		reg_val = CHRG_CCCV_CV_4150MV;
-		cv = CV_4150MV;
-	} else if (cv <= CV_4200MV) {
-		reg_val = CHRG_CCCV_CV_4200MV;
-		cv = CV_4200MV;
-	} else {
+	if (cv >= CV_4350MV) {
 		reg_val = CHRG_CCCV_CV_4350MV;
 		cv = CV_4350MV;
+	} else if (cv >= CV_4200MV) {
+		reg_val = CHRG_CCCV_CV_4200MV;
+		cv = CV_4200MV;
+	} else if (cv >= CV_4150MV) {
+		reg_val = CHRG_CCCV_CV_4150MV;
+		cv = CV_4150MV;
+	} else {
+		reg_val = CHRG_CCCV_CV_4100MV;
+		cv = CV_4100MV;
 	}
 
 	reg_val = reg_val << CHRG_CCCV_CV_BIT_POS;
@@ -370,8 +371,8 @@ static int axp288_charger_usb_set_property(struct power_supply *psy,
 			dev_warn(&info->pdev->dev, "set charge current failed\n");
 		break;
 	case POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE:
-		scaled_val = min(val->intval, info->max_cv);
-		scaled_val = DIV_ROUND_CLOSEST(scaled_val, 1000);
+		scaled_val = DIV_ROUND_CLOSEST(val->intval, 1000);
+		scaled_val = min(scaled_val, info->max_cv);
 		ret = axp288_charger_set_cv(info, scaled_val);
 		if (ret < 0)
 			dev_warn(&info->pdev->dev, "set charge voltage failed\n");
@@ -545,6 +546,55 @@ out:
 	return IRQ_HANDLED;
 }
 
+/*
+ * The HP Pavilion x2 10 series comes in a number of variants:
+ * Bay Trail SoC    + AXP288 PMIC, Micro-USB, DMI_BOARD_NAME: "8021"
+ * Bay Trail SoC    + AXP288 PMIC, Type-C,    DMI_BOARD_NAME: "815D"
+ * Cherry Trail SoC + AXP288 PMIC, Type-C,    DMI_BOARD_NAME: "813E"
+ * Cherry Trail SoC + TI PMIC,     Type-C,    DMI_BOARD_NAME: "827C" or "82F4"
+ *
+ * The variants with the AXP288 + Type-C connector are all kinds of special:
+ *
+ * 1. They use a Type-C connector which the AXP288 does not support, so when
+ * using a Type-C charger it is not recognized. Unlike most AXP288 devices,
+ * this model actually has mostly working ACPI AC / Battery code, the ACPI code
+ * "solves" this by simply setting the input_current_limit to 3A.
+ * There are still some issues with the ACPI code, so we use this native driver,
+ * and to solve the charging not working (500mA is not enough) issue we hardcode
+ * the 3A input_current_limit like the ACPI code does.
+ *
+ * 2. If no charger is connected the machine boots with the vbus-path disabled.
+ * Normally this is done when a 5V boost converter is active to avoid the PMIC
+ * trying to charge from the 5V boost converter's output. This is done when
+ * an OTG host cable is inserted and the ID pin on the micro-B receptacle is
+ * pulled low and the ID pin has an ACPI event handler associated with it
+ * which re-enables the vbus-path when the ID pin is pulled high when the
+ * OTG host cable is removed. The Type-C connector has no ID pin, there is
+ * no ID pin handler and there appears to be no 5V boost converter, so we
+ * end up not charging because the vbus-path is disabled, until we unplug
+ * the charger which automatically clears the vbus-path disable bit and then
+ * on the second plug-in of the adapter we start charging. To solve the not
+ * charging on first charger plugin we unconditionally enable the vbus-path at
+ * probe on this model, which is safe since there is no 5V boost converter.
+ */
+static const struct dmi_system_id axp288_hp_x2_dmi_ids[] = {
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "HP Pavilion x2 Detachable"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "815D"),
+		},
+	},
+	{
+		.matches = {
+			DMI_EXACT_MATCH(DMI_SYS_VENDOR, "HP"),
+			DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "HP Pavilion x2 Detachable"),
+			DMI_EXACT_MATCH(DMI_BOARD_NAME, "813E"),
+		},
+	},
+	{} /* Terminating entry */
+};
+
 static void axp288_charger_extcon_evt_worker(struct work_struct *work)
 {
 	struct axp288_chrg_info *info =
@@ -568,7 +618,11 @@ static void axp288_charger_extcon_evt_worker(struct work_struct *work)
 	}
 
 	/* Determine cable/charger type */
-	if (extcon_get_state(edev, EXTCON_CHG_USB_SDP) > 0) {
+	if (dmi_check_system(axp288_hp_x2_dmi_ids)) {
+		/* See comment above axp288_hp_x2_dmi_ids declaration */
+		dev_dbg(&info->pdev->dev, "HP X2 with Type-C, setting inlmt to 3A\n");
+		current_limit = 3000000;
+	} else if (extcon_get_state(edev, EXTCON_CHG_USB_SDP) > 0) {
 		dev_dbg(&info->pdev->dev, "USB SDP charger is connected\n");
 		current_limit = 500000;
 	} else if (extcon_get_state(edev, EXTCON_CHG_USB_CDP) > 0) {
@@ -683,6 +737,23 @@ static int charger_init_hw_regs(struct axp288_chrg_info *info)
 		dev_err(&info->pdev->dev, "register(%x) write error(%d)\n",
 						AXP20X_CC_CTRL, ret);
 		return ret;
+	}
+
+	if (dmi_check_system(axp288_hp_x2_dmi_ids)) {
+		/* See comment above axp288_hp_x2_dmi_ids declaration */
+		ret = axp288_charger_vbus_path_select(info, true);
+		if (ret < 0)
+			return ret;
+	} else {
+		/* Set Vhold to the factory default / recommended 4.4V */
+		val = VBUS_ISPOUT_VHOLD_SET_4400MV << VBUS_ISPOUT_VHOLD_SET_BIT_POS;
+		ret = regmap_update_bits(info->regmap, AXP20X_VBUS_IPSOUT_MGMT,
+					 VBUS_ISPOUT_VHOLD_SET_MASK, val);
+		if (ret < 0) {
+			dev_err(&info->pdev->dev, "register(%x) write error(%d)\n",
+				AXP20X_VBUS_IPSOUT_MGMT, ret);
+			return ret;
+		}
 	}
 
 	/* Read current charge voltage and current limit */

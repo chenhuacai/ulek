@@ -8,6 +8,7 @@
 
 #include <linux/bits.h>
 #include <uapi/asm/setup.h>
+#include <linux/build_bug.h>
 
 #define EP_OFFSET		0x10008
 #define EP_STRING		"S390EP"
@@ -38,6 +39,7 @@
 #define MACHINE_FLAG_NX		BIT(15)
 #define MACHINE_FLAG_GS		BIT(16)
 #define MACHINE_FLAG_SCC	BIT(17)
+#define MACHINE_FLAG_PCI_MIO	BIT(18)
 
 #define LPP_MAGIC		BIT(31)
 #define LPP_PID_MASK		_AC(0xffffffff, UL)
@@ -105,6 +107,7 @@ extern unsigned long __swsusp_reset_dma;
 #define MACHINE_HAS_NX		(S390_lowcore.machine_flags & MACHINE_FLAG_NX)
 #define MACHINE_HAS_GS		(S390_lowcore.machine_flags & MACHINE_FLAG_GS)
 #define MACHINE_HAS_SCC		(S390_lowcore.machine_flags & MACHINE_FLAG_SCC)
+#define MACHINE_HAS_PCI_MIO	(S390_lowcore.machine_flags & MACHINE_FLAG_PCI_MIO)
 
 /*
  * Console mode. Override with conmode=
@@ -155,6 +158,12 @@ extern unsigned long __kaslr_offset;
 static inline unsigned long kaslr_offset(void)
 {
 	return __kaslr_offset;
+}
+
+static inline u32 gen_lpswe(unsigned long addr)
+{
+	BUILD_BUG_ON(addr > 0xfff);
+	return 0xb2b20000 | addr;
 }
 
 #else /* __ASSEMBLY__ */

@@ -31,6 +31,7 @@ static DEFINE_SPINLOCK(taprio_list_lock);
 
 #define TXTIME_ASSIST_IS_ENABLED(flags) ((flags) & TCA_TAPRIO_ATTR_FLAG_TXTIME_ASSIST)
 #define FULL_OFFLOAD_IS_ENABLED(flags) ((flags) & TCA_TAPRIO_ATTR_FLAG_FULL_OFFLOAD)
+#define TAPRIO_FLAGS_INVALID U32_MAX
 
 struct sched_entry {
 	struct list_head list;
@@ -64,6 +65,7 @@ struct taprio_sched {
 	u32 flags;
 	enum tk_offsets tk_offset;
 	int clockid;
+	bool offloaded;
 	atomic64_t picos_per_byte; /* Using picoseconds because for 10Gbps+
 				    * speeds it's sub-nanoseconds per byte
 				    */
@@ -93,18 +95,22 @@ static ktime_t sched_base_time(const struct sched_gate_list *sched)
 	return ns_to_ktime(sched->base_time);
 }
 
-static ktime_t taprio_get_time(struct taprio_sched *q)
+static ktime_t taprio_mono_to_any(const struct taprio_sched *q, ktime_t mono)
 {
-	ktime_t mono = ktime_get();
+	/* This pairs with WRITE_ONCE() in taprio_parse_clockid() */
+	enum tk_offsets tk_offset = READ_ONCE(q->tk_offset);
 
-	switch (q->tk_offset) {
+	switch (tk_offset) {
 	case TK_OFFS_MAX:
 		return mono;
 	default:
-		return ktime_mono_to_any(mono, q->tk_offset);
+		return ktime_mono_to_any(mono, tk_offset);
 	}
+}
 
-	return KTIME_MAX;
+static ktime_t taprio_get_time(const struct taprio_sched *q)
+{
+	return taprio_mono_to_any(q, ktime_get());
 }
 
 static void taprio_free_sched_cb(struct rcu_head *head)
@@ -320,7 +326,7 @@ static ktime_t get_tcp_tstamp(struct taprio_sched *q, struct sk_buff *skb)
 		return 0;
 	}
 
-	return ktime_mono_to_any(skb->skb_mstamp_ns, q->tk_offset);
+	return taprio_mono_to_any(q, skb->skb_mstamp_ns);
 }
 
 /* There are a few scenarios where we will have to modify the txtime from
@@ -422,7 +428,8 @@ static int taprio_enqueue(struct sk_buff *skb, struct Qdisc *sch,
 	if (unlikely(!child))
 		return qdisc_drop(skb, sch, to_free);
 
-	if (skb->sk && sock_flag(skb->sk, SOCK_TXTIME)) {
+	/* sk_flags are only safe to use on full sockets. */
+	if (skb->sk && sk_fullsock(skb->sk) && sock_flag(skb->sk, SOCK_TXTIME)) {
 		if (!is_valid_interval(skb, sch))
 			return qdisc_drop(skb, sch, to_free);
 	} else if (TXTIME_ASSIST_IS_ENABLED(q->flags)) {
@@ -563,8 +570,10 @@ static struct sk_buff *taprio_dequeue_soft(struct Qdisc *sch)
 		prio = skb->priority;
 		tc = netdev_get_prio_tc_map(dev, prio);
 
-		if (!(gate_mask & BIT(tc)))
+		if (!(gate_mask & BIT(tc))) {
+			skb = NULL;
 			continue;
+		}
 
 		len = qdisc_pkt_len(skb);
 		guard = ktime_add_ns(taprio_get_time(q),
@@ -574,13 +583,17 @@ static struct sk_buff *taprio_dequeue_soft(struct Qdisc *sch)
 		 * guard band ...
 		 */
 		if (gate_mask != TAPRIO_ALL_GATES_OPEN &&
-		    ktime_after(guard, entry->close_time))
+		    ktime_after(guard, entry->close_time)) {
+			skb = NULL;
 			continue;
+		}
 
 		/* ... and no budget. */
 		if (gate_mask != TAPRIO_ALL_GATES_OPEN &&
-		    atomic_sub_return(len, &entry->budget) < 0)
+		    atomic_sub_return(len, &entry->budget) < 0) {
+			skb = NULL;
 			continue;
+		}
 
 		skb = child->ops->dequeue(child);
 		if (unlikely(!skb))
@@ -766,11 +779,15 @@ static const struct nla_policy taprio_policy[TCA_TAPRIO_ATTR_MAX + 1] = {
 	[TCA_TAPRIO_ATTR_SCHED_CLOCKID]              = { .type = NLA_S32 },
 	[TCA_TAPRIO_ATTR_SCHED_CYCLE_TIME]           = { .type = NLA_S64 },
 	[TCA_TAPRIO_ATTR_SCHED_CYCLE_TIME_EXTENSION] = { .type = NLA_S64 },
+	[TCA_TAPRIO_ATTR_FLAGS]                      = { .type = NLA_U32 },
+	[TCA_TAPRIO_ATTR_TXTIME_DELAY]		     = { .type = NLA_U32 },
 };
 
-static int fill_sched_entry(struct nlattr **tb, struct sched_entry *entry,
+static int fill_sched_entry(struct taprio_sched *q, struct nlattr **tb,
+			    struct sched_entry *entry,
 			    struct netlink_ext_ack *extack)
 {
+	int min_duration = length_to_duration(q, ETH_ZLEN);
 	u32 interval = 0;
 
 	if (tb[TCA_TAPRIO_SCHED_ENTRY_CMD])
@@ -785,7 +802,10 @@ static int fill_sched_entry(struct nlattr **tb, struct sched_entry *entry,
 		interval = nla_get_u32(
 			tb[TCA_TAPRIO_SCHED_ENTRY_INTERVAL]);
 
-	if (interval == 0) {
+	/* The interval should allow at least the minimum ethernet
+	 * frame to go out.
+	 */
+	if (interval < min_duration) {
 		NL_SET_ERR_MSG(extack, "Invalid interval for schedule entry");
 		return -EINVAL;
 	}
@@ -795,8 +815,9 @@ static int fill_sched_entry(struct nlattr **tb, struct sched_entry *entry,
 	return 0;
 }
 
-static int parse_sched_entry(struct nlattr *n, struct sched_entry *entry,
-			     int index, struct netlink_ext_ack *extack)
+static int parse_sched_entry(struct taprio_sched *q, struct nlattr *n,
+			     struct sched_entry *entry, int index,
+			     struct netlink_ext_ack *extack)
 {
 	struct nlattr *tb[TCA_TAPRIO_SCHED_ENTRY_MAX + 1] = { };
 	int err;
@@ -810,10 +831,10 @@ static int parse_sched_entry(struct nlattr *n, struct sched_entry *entry,
 
 	entry->index = index;
 
-	return fill_sched_entry(tb, entry, extack);
+	return fill_sched_entry(q, tb, entry, extack);
 }
 
-static int parse_sched_list(struct nlattr *list,
+static int parse_sched_list(struct taprio_sched *q, struct nlattr *list,
 			    struct sched_gate_list *sched,
 			    struct netlink_ext_ack *extack)
 {
@@ -838,7 +859,7 @@ static int parse_sched_list(struct nlattr *list,
 			return -ENOMEM;
 		}
 
-		err = parse_sched_entry(n, entry, i, extack);
+		err = parse_sched_entry(q, n, entry, i, extack);
 		if (err < 0) {
 			kfree(entry);
 			return err;
@@ -853,7 +874,7 @@ static int parse_sched_list(struct nlattr *list,
 	return i;
 }
 
-static int parse_taprio_schedule(struct nlattr **tb,
+static int parse_taprio_schedule(struct taprio_sched *q, struct nlattr **tb,
 				 struct sched_gate_list *new,
 				 struct netlink_ext_ack *extack)
 {
@@ -874,8 +895,8 @@ static int parse_taprio_schedule(struct nlattr **tb,
 		new->cycle_time = nla_get_s64(tb[TCA_TAPRIO_ATTR_SCHED_CYCLE_TIME]);
 
 	if (tb[TCA_TAPRIO_ATTR_SCHED_ENTRY_LIST])
-		err = parse_sched_list(
-			tb[TCA_TAPRIO_ATTR_SCHED_ENTRY_LIST], new, extack);
+		err = parse_sched_list(q, tb[TCA_TAPRIO_ATTR_SCHED_ENTRY_LIST],
+				       new, extack);
 	if (err < 0)
 		return err;
 
@@ -885,6 +906,12 @@ static int parse_taprio_schedule(struct nlattr **tb,
 
 		list_for_each_entry(entry, &new->entries, list)
 			cycle = ktime_add_ns(cycle, entry->interval);
+
+		if (!cycle) {
+			NL_SET_ERR_MSG(extack, "'cycle_time' can never be 0");
+			return -EINVAL;
+		}
+
 		new->cycle_time = cycle;
 	}
 
@@ -898,16 +925,13 @@ static int taprio_parse_mqprio_opt(struct net_device *dev,
 {
 	int i, j;
 
-	if (!qopt && !dev->num_tc) {
-		NL_SET_ERR_MSG(extack, "'mqprio' configuration is necessary");
-		return -EINVAL;
-	}
-
-	/* If num_tc is already set, it means that the user already
-	 * configured the mqprio part
-	 */
-	if (dev->num_tc)
+	if (!qopt) {
+		if (!dev->num_tc) {
+			NL_SET_ERR_MSG(extack, "'mqprio' configuration is necessary");
+			return -EINVAL;
+		}
 		return 0;
+	}
 
 	/* Verify num_tc is not out of max range */
 	if (qopt->num_tc > TC_MAX_QUEUE) {
@@ -1168,9 +1192,27 @@ static void taprio_offload_config_changed(struct taprio_sched *q)
 	spin_unlock(&q->current_entry_lock);
 }
 
-static void taprio_sched_to_offload(struct taprio_sched *q,
+static u32 tc_map_to_queue_mask(struct net_device *dev, u32 tc_mask)
+{
+	u32 i, queue_mask = 0;
+
+	for (i = 0; i < dev->num_tc; i++) {
+		u32 offset, count;
+
+		if (!(tc_mask & BIT(i)))
+			continue;
+
+		offset = dev->tc_to_txq[i].offset;
+		count = dev->tc_to_txq[i].count;
+
+		queue_mask |= GENMASK(offset + count - 1, offset);
+	}
+
+	return queue_mask;
+}
+
+static void taprio_sched_to_offload(struct net_device *dev,
 				    struct sched_gate_list *sched,
-				    const struct tc_mqprio_qopt *mqprio,
 				    struct tc_taprio_qopt_offload *offload)
 {
 	struct sched_entry *entry;
@@ -1185,7 +1227,8 @@ static void taprio_sched_to_offload(struct taprio_sched *q,
 
 		e->command = entry->command;
 		e->interval = entry->interval;
-		e->gate_mask = entry->gate_mask;
+		e->gate_mask = tc_map_to_queue_mask(dev, entry->gate_mask);
+
 		i++;
 	}
 
@@ -1193,7 +1236,6 @@ static void taprio_sched_to_offload(struct taprio_sched *q,
 }
 
 static int taprio_enable_offload(struct net_device *dev,
-				 struct tc_mqprio_qopt *mqprio,
 				 struct taprio_sched *q,
 				 struct sched_gate_list *sched,
 				 struct netlink_ext_ack *extack)
@@ -1215,7 +1257,7 @@ static int taprio_enable_offload(struct net_device *dev,
 		return -ENOMEM;
 	}
 	offload->enable = 1;
-	taprio_sched_to_offload(q, sched, mqprio, offload);
+	taprio_sched_to_offload(dev, sched, offload);
 
 	err = ops->ndo_setup_tc(dev, TC_SETUP_QDISC_TAPRIO, offload);
 	if (err < 0) {
@@ -1223,6 +1265,8 @@ static int taprio_enable_offload(struct net_device *dev,
 			       "Device failed to setup taprio offload");
 		goto done;
 	}
+
+	q->offloaded = true;
 
 done:
 	taprio_offload_free(offload);
@@ -1238,11 +1282,8 @@ static int taprio_disable_offload(struct net_device *dev,
 	struct tc_taprio_qopt_offload *offload;
 	int err;
 
-	if (!FULL_OFFLOAD_IS_ENABLED(q->flags))
+	if (!q->offloaded)
 		return 0;
-
-	if (!ops->ndo_setup_tc)
-		return -EOPNOTSUPP;
 
 	offload = taprio_offload_alloc(0);
 	if (!offload) {
@@ -1258,6 +1299,8 @@ static int taprio_disable_offload(struct net_device *dev,
 			       "Device failed to disable offload");
 		goto out;
 	}
+
+	q->offloaded = false;
 
 out:
 	taprio_offload_free(offload);
@@ -1303,6 +1346,7 @@ static int taprio_parse_clockid(struct Qdisc *sch, struct nlattr **tb,
 		}
 	} else if (tb[TCA_TAPRIO_ATTR_SCHED_CLOCKID]) {
 		int clockid = nla_get_s32(tb[TCA_TAPRIO_ATTR_SCHED_CLOCKID]);
+		enum tk_offsets tk_offset;
 
 		/* We only support static clockids and we don't allow
 		 * for it to be modified after the first init.
@@ -1317,22 +1361,24 @@ static int taprio_parse_clockid(struct Qdisc *sch, struct nlattr **tb,
 
 		switch (clockid) {
 		case CLOCK_REALTIME:
-			q->tk_offset = TK_OFFS_REAL;
+			tk_offset = TK_OFFS_REAL;
 			break;
 		case CLOCK_MONOTONIC:
-			q->tk_offset = TK_OFFS_MAX;
+			tk_offset = TK_OFFS_MAX;
 			break;
 		case CLOCK_BOOTTIME:
-			q->tk_offset = TK_OFFS_BOOT;
+			tk_offset = TK_OFFS_BOOT;
 			break;
 		case CLOCK_TAI:
-			q->tk_offset = TK_OFFS_TAI;
+			tk_offset = TK_OFFS_TAI;
 			break;
 		default:
 			NL_SET_ERR_MSG(extack, "Invalid 'clockid'");
 			err = -EINVAL;
 			goto out;
 		}
+		/* This pairs with READ_ONCE() in taprio_mono_to_any */
+		WRITE_ONCE(q->tk_offset, tk_offset);
 
 		q->clockid = clockid;
 	} else {
@@ -1367,6 +1413,33 @@ static int taprio_mqprio_cmp(const struct net_device *dev,
 	return 0;
 }
 
+/* The semantics of the 'flags' argument in relation to 'change()'
+ * requests, are interpreted following two rules (which are applied in
+ * this order): (1) an omitted 'flags' argument is interpreted as
+ * zero; (2) the 'flags' of a "running" taprio instance cannot be
+ * changed.
+ */
+static int taprio_new_flags(const struct nlattr *attr, u32 old,
+			    struct netlink_ext_ack *extack)
+{
+	u32 new = 0;
+
+	if (attr)
+		new = nla_get_u32(attr);
+
+	if (old != TAPRIO_FLAGS_INVALID && old != new) {
+		NL_SET_ERR_MSG_MOD(extack, "Changing 'flags' of a running schedule is not supported");
+		return -EOPNOTSUPP;
+	}
+
+	if (!taprio_flags_valid(new)) {
+		NL_SET_ERR_MSG_MOD(extack, "Specified 'flags' are not valid");
+		return -EINVAL;
+	}
+
+	return new;
+}
+
 static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 			 struct netlink_ext_ack *extack)
 {
@@ -1375,7 +1448,6 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 	struct taprio_sched *q = qdisc_priv(sch);
 	struct net_device *dev = qdisc_dev(sch);
 	struct tc_mqprio_qopt *mqprio = NULL;
-	u32 taprio_flags = 0;
 	unsigned long flags;
 	ktime_t start;
 	int i, err;
@@ -1388,21 +1460,14 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 	if (tb[TCA_TAPRIO_ATTR_PRIOMAP])
 		mqprio = nla_data(tb[TCA_TAPRIO_ATTR_PRIOMAP]);
 
-	if (tb[TCA_TAPRIO_ATTR_FLAGS]) {
-		taprio_flags = nla_get_u32(tb[TCA_TAPRIO_ATTR_FLAGS]);
+	err = taprio_new_flags(tb[TCA_TAPRIO_ATTR_FLAGS],
+			       q->flags, extack);
+	if (err < 0)
+		return err;
 
-		if (q->flags != 0 && q->flags != taprio_flags) {
-			NL_SET_ERR_MSG_MOD(extack, "Changing 'flags' of a running schedule is not supported");
-			return -EOPNOTSUPP;
-		} else if (!taprio_flags_valid(taprio_flags)) {
-			NL_SET_ERR_MSG_MOD(extack, "Specified 'flags' are not valid");
-			return -EINVAL;
-		}
+	q->flags = err;
 
-		q->flags = taprio_flags;
-	}
-
-	err = taprio_parse_mqprio_opt(dev, mqprio, extack, taprio_flags);
+	err = taprio_parse_mqprio_opt(dev, mqprio, extack, q->flags);
 	if (err < 0)
 		return err;
 
@@ -1428,7 +1493,7 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 		goto free_sched;
 	}
 
-	err = parse_taprio_schedule(tb, new_admin, extack);
+	err = parse_taprio_schedule(q, tb, new_admin, extack);
 	if (err < 0)
 		goto free_sched;
 
@@ -1444,8 +1509,23 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 
 	taprio_set_picos_per_byte(dev, q);
 
-	if (FULL_OFFLOAD_IS_ENABLED(taprio_flags))
-		err = taprio_enable_offload(dev, mqprio, q, new_admin, extack);
+	if (mqprio) {
+		err = netdev_set_num_tc(dev, mqprio->num_tc);
+		if (err)
+			goto free_sched;
+		for (i = 0; i < mqprio->num_tc; i++)
+			netdev_set_tc_queue(dev, i,
+					    mqprio->count[i],
+					    mqprio->offset[i]);
+
+		/* Always use supplied priority mappings */
+		for (i = 0; i <= TC_BITMASK; i++)
+			netdev_set_prio_tc_map(dev, i,
+					       mqprio->prio_tc_map[i]);
+	}
+
+	if (FULL_OFFLOAD_IS_ENABLED(q->flags))
+		err = taprio_enable_offload(dev, q, new_admin, extack);
 	else
 		err = taprio_disable_offload(dev, q, extack);
 	if (err)
@@ -1464,27 +1544,14 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 		q->txtime_delay = nla_get_u32(tb[TCA_TAPRIO_ATTR_TXTIME_DELAY]);
 	}
 
-	if (!TXTIME_ASSIST_IS_ENABLED(taprio_flags) &&
-	    !FULL_OFFLOAD_IS_ENABLED(taprio_flags) &&
+	if (!TXTIME_ASSIST_IS_ENABLED(q->flags) &&
+	    !FULL_OFFLOAD_IS_ENABLED(q->flags) &&
 	    !hrtimer_active(&q->advance_timer)) {
 		hrtimer_init(&q->advance_timer, q->clockid, HRTIMER_MODE_ABS);
 		q->advance_timer.function = advance_sched;
 	}
 
-	if (mqprio) {
-		netdev_set_num_tc(dev, mqprio->num_tc);
-		for (i = 0; i < mqprio->num_tc; i++)
-			netdev_set_tc_queue(dev, i,
-					    mqprio->count[i],
-					    mqprio->offset[i]);
-
-		/* Always use supplied priority mappings */
-		for (i = 0; i <= TC_BITMASK; i++)
-			netdev_set_prio_tc_map(dev, i,
-					       mqprio->prio_tc_map[i]);
-	}
-
-	if (FULL_OFFLOAD_IS_ENABLED(taprio_flags)) {
+	if (FULL_OFFLOAD_IS_ENABLED(q->flags)) {
 		q->dequeue = taprio_dequeue_offload;
 		q->peek = taprio_peek_offload;
 	} else {
@@ -1501,9 +1568,9 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 		goto unlock;
 	}
 
-	if (TXTIME_ASSIST_IS_ENABLED(taprio_flags)) {
-		setup_txtime(q, new_admin, start);
+	setup_txtime(q, new_admin, start);
 
+	if (TXTIME_ASSIST_IS_ENABLED(q->flags)) {
 		if (!oper) {
 			rcu_assign_pointer(q->oper_sched, new_admin);
 			err = 0;
@@ -1511,7 +1578,9 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 			goto unlock;
 		}
 
-		rcu_assign_pointer(q->admin_sched, new_admin);
+		/* Not going to race against advance_sched(), but still */
+		admin = rcu_replace_pointer(q->admin_sched, new_admin,
+					    lockdep_rtnl_is_held());
 		if (admin)
 			call_rcu(&admin->rcu, taprio_free_sched_cb);
 	} else {
@@ -1522,13 +1591,14 @@ static int taprio_change(struct Qdisc *sch, struct nlattr *opt,
 
 		taprio_start_sched(sch, start, new_admin);
 
-		rcu_assign_pointer(q->admin_sched, new_admin);
+		admin = rcu_replace_pointer(q->admin_sched, new_admin,
+					    lockdep_rtnl_is_held());
 		if (admin)
 			call_rcu(&admin->rcu, taprio_free_sched_cb);
 
 		spin_unlock_irqrestore(&q->current_entry_lock, flags);
 
-		if (FULL_OFFLOAD_IS_ENABLED(taprio_flags))
+		if (FULL_OFFLOAD_IS_ENABLED(q->flags))
 			taprio_offload_config_changed(q);
 	}
 
@@ -1545,6 +1615,22 @@ free_sched:
 	return err;
 }
 
+static void taprio_reset(struct Qdisc *sch)
+{
+	struct taprio_sched *q = qdisc_priv(sch);
+	struct net_device *dev = qdisc_dev(sch);
+	int i;
+
+	hrtimer_cancel(&q->advance_timer);
+
+	if (q->qdiscs) {
+		for (i = 0; i < dev->num_tx_queues && q->qdiscs[i]; i++)
+			qdisc_reset(q->qdiscs[i]);
+	}
+	sch->qstats.backlog = 0;
+	sch->q.qlen = 0;
+}
+
 static void taprio_destroy(struct Qdisc *sch)
 {
 	struct taprio_sched *q = qdisc_priv(sch);
@@ -1555,19 +1641,23 @@ static void taprio_destroy(struct Qdisc *sch)
 	list_del(&q->taprio_list);
 	spin_unlock(&taprio_list_lock);
 
+	/* Note that taprio_reset() might not be called if an error
+	 * happens in qdisc_create(), after taprio_init() has been called.
+	 */
 	hrtimer_cancel(&q->advance_timer);
+	qdisc_synchronize(sch);
 
 	taprio_disable_offload(dev, q, NULL);
 
 	if (q->qdiscs) {
-		for (i = 0; i < dev->num_tx_queues && q->qdiscs[i]; i++)
+		for (i = 0; i < dev->num_tx_queues; i++)
 			qdisc_put(q->qdiscs[i]);
 
 		kfree(q->qdiscs);
 	}
 	q->qdiscs = NULL;
 
-	netdev_set_num_tc(dev, 0);
+	netdev_reset_tc(dev);
 
 	if (q->oper_sched)
 		call_rcu(&q->oper_sched->rcu, taprio_free_sched_cb);
@@ -1597,6 +1687,7 @@ static int taprio_init(struct Qdisc *sch, struct nlattr *opt,
 	 * and get the valid one on taprio_change().
 	 */
 	q->clockid = -1;
+	q->flags = TAPRIO_FLAGS_INVALID;
 
 	spin_lock(&taprio_list_lock);
 	list_add(&q->taprio_list, &taprio_list);
@@ -1901,6 +1992,7 @@ static struct Qdisc_ops taprio_qdisc_ops __read_mostly = {
 	.init		= taprio_init,
 	.change		= taprio_change,
 	.destroy	= taprio_destroy,
+	.reset		= taprio_reset,
 	.peek		= taprio_peek,
 	.dequeue	= taprio_dequeue,
 	.enqueue	= taprio_enqueue,

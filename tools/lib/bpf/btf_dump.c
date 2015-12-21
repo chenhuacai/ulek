@@ -443,7 +443,7 @@ static int btf_dump_order_type(struct btf_dump *d, __u32 id, bool through_ptr)
 		return err;
 
 	case BTF_KIND_ARRAY:
-		return btf_dump_order_type(d, btf_array(t)->type, through_ptr);
+		return btf_dump_order_type(d, btf_array(t)->type, false);
 
 	case BTF_KIND_STRUCT:
 	case BTF_KIND_UNION: {
@@ -876,7 +876,6 @@ static void btf_dump_emit_struct_def(struct btf_dump *d,
 	__u16 vlen = btf_vlen(t);
 
 	packed = is_struct ? btf_is_struct_packed(d->btf, id, t) : 0;
-	align = packed ? 1 : btf_align_of(d->btf, id);
 
 	btf_dump_printf(d, "%s%s%s {",
 			is_struct ? "struct" : "union",
@@ -904,6 +903,13 @@ static void btf_dump_emit_struct_def(struct btf_dump *d,
 			off = m_off + m_sz * 8;
 		}
 		btf_dump_printf(d, ";");
+	}
+
+	/* pad at the end, if necessary */
+	if (is_struct) {
+		align = packed ? 1 : btf_align_of(d->btf, id);
+		btf_dump_emit_bit_padding(d, off, t->size * 8, 0, align,
+					  lvl + 1);
 	}
 
 	if (vlen)
@@ -1135,6 +1141,20 @@ static void btf_dump_emit_mods(struct btf_dump *d, struct id_stack *decl_stack)
 	}
 }
 
+static void btf_dump_drop_mods(struct btf_dump *d, struct id_stack *decl_stack)
+{
+	const struct btf_type *t;
+	__u32 id;
+
+	while (decl_stack->cnt) {
+		id = decl_stack->ids[decl_stack->cnt - 1];
+		t = btf__type_by_id(d->btf, id);
+		if (!btf_is_mod(t))
+			return;
+		decl_stack->cnt--;
+	}
+}
+
 static void btf_dump_emit_name(const struct btf_dump *d,
 			       const char *name, bool last_was_ptr)
 {
@@ -1233,14 +1253,7 @@ static void btf_dump_emit_type_chain(struct btf_dump *d,
 			 * a const/volatile modifier for array, so we are
 			 * going to silently skip them here.
 			 */
-			while (decls->cnt) {
-				next_id = decls->ids[decls->cnt - 1];
-				next_t = btf__type_by_id(d->btf, next_id);
-				if (btf_is_mod(next_t))
-					decls->cnt--;
-				else
-					break;
-			}
+			btf_dump_drop_mods(d, decls);
 
 			if (decls->cnt == 0) {
 				btf_dump_emit_name(d, fname, last_was_ptr);
@@ -1268,7 +1281,15 @@ static void btf_dump_emit_type_chain(struct btf_dump *d,
 			__u16 vlen = btf_vlen(t);
 			int i;
 
-			btf_dump_emit_mods(d, decls);
+			/*
+			 * GCC emits extra volatile qualifier for
+			 * __attribute__((noreturn)) function pointers. Clang
+			 * doesn't do it. It's a GCC quirk for backwards
+			 * compatibility with code written for GCC <2.5. So,
+			 * similarly to extra qualifiers for array, just drop
+			 * them, instead of handling them.
+			 */
+			btf_dump_drop_mods(d, decls);
 			if (decls->cnt) {
 				btf_dump_printf(d, " (");
 				btf_dump_emit_type_chain(d, decls, fname, lvl);
@@ -1281,10 +1302,12 @@ static void btf_dump_emit_type_chain(struct btf_dump *d,
 			 * Clang for BPF target generates func_proto with no
 			 * args as a func_proto with a single void arg (e.g.,
 			 * `int (*f)(void)` vs just `int (*f)()`). We are
-			 * going to pretend there are no args for such case.
+			 * going to emit valid empty args (void) syntax for
+			 * such case. Similarly and conveniently, valid
+			 * no args case can be special-cased here as well.
 			 */
-			if (vlen == 1 && p->type == 0) {
-				btf_dump_printf(d, ")");
+			if (vlen == 0 || (vlen == 1 && p->type == 0)) {
+				btf_dump_printf(d, "void)");
 				return;
 			}
 
@@ -1344,6 +1367,11 @@ static const char *btf_dump_resolve_name(struct btf_dump *d, __u32 id,
 
 	if (s->name_resolved)
 		return *cached_name ? *cached_name : orig_name;
+
+	if (btf_is_fwd(t) || (btf_is_enum(t) && btf_vlen(t) == 0)) {
+		s->name_resolved = 1;
+		return orig_name;
+	}
 
 	dup_cnt = btf_dump_name_dups(d, name_map, orig_name);
 	if (dup_cnt > 1) {

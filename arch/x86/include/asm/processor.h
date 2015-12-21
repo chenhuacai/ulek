@@ -334,7 +334,7 @@ struct x86_hw_tss {
 #define INVALID_IO_BITMAP_OFFSET	0x8000
 
 struct entry_stack {
-	unsigned long		words[64];
+	char	stack[PAGE_SIZE];
 };
 
 struct entry_stack_page {
@@ -487,7 +487,6 @@ struct thread_struct {
 
 	mm_segment_t		addr_limit;
 
-	unsigned int		sig_on_uaccess_err:1;
 	unsigned int		uaccess_err:1;	/* uaccess failed */
 
 	/* Floating point and extended processor state */
@@ -505,15 +504,6 @@ static inline void arch_thread_struct_whitelist(unsigned long *offset,
 	*offset = offsetof(struct thread_struct, fpu.state);
 	*size = fpu_kernel_xstate_size;
 }
-
-/*
- * Thread-synchronous status.
- *
- * This is different from the flags in that nobody else
- * ever touches our thread-synchronous status, so we don't
- * have to worry about atomic accesses.
- */
-#define TS_COMPAT		0x0002	/* 32bit syscall active (64BIT)*/
 
 /*
  * Set IOPL bits in EFLAGS from given mask
@@ -994,5 +984,7 @@ enum taa_mitigations {
 	TAA_MITIGATION_VERW,
 	TAA_MITIGATION_TSX_DISABLED,
 };
+
+extern bool gds_ucode_mitigated(void);
 
 #endif /* _ASM_X86_PROCESSOR_H */

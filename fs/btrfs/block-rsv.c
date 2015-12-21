@@ -5,6 +5,7 @@
 #include "block-rsv.h"
 #include "space-info.h"
 #include "transaction.h"
+#include "block-group.h"
 
 static u64 block_rsv_release_bytes(struct btrfs_fs_info *fs_info,
 				    struct btrfs_block_rsv *block_rsv,
@@ -28,7 +29,8 @@ static u64 block_rsv_release_bytes(struct btrfs_fs_info *fs_info,
 	} else {
 		num_bytes = 0;
 	}
-	if (block_rsv->qgroup_rsv_reserved >= block_rsv->qgroup_rsv_size) {
+	if (qgroup_to_release_ret &&
+	    block_rsv->qgroup_rsv_reserved >= block_rsv->qgroup_rsv_size) {
 		qgroup_to_release = block_rsv->qgroup_rsv_reserved -
 				    block_rsv->qgroup_rsv_size;
 		block_rsv->qgroup_rsv_reserved = block_rsv->qgroup_rsv_size;
@@ -313,6 +315,8 @@ void btrfs_update_global_block_rsv(struct btrfs_fs_info *fs_info)
 	else
 		block_rsv->full = 0;
 
+	if (block_rsv->size >= sinfo->total_bytes)
+		sinfo->force_alloc = CHUNK_ALLOC_FORCE;
 	spin_unlock(&block_rsv->lock);
 	spin_unlock(&sinfo->lock);
 }
@@ -388,7 +392,7 @@ struct btrfs_block_rsv *btrfs_use_block_rsv(struct btrfs_trans_handle *trans,
 
 	block_rsv = get_block_rsv(trans, root);
 
-	if (unlikely(block_rsv->size == 0))
+	if (unlikely(btrfs_block_rsv_size(block_rsv) == 0))
 		goto try_reserve;
 again:
 	ret = btrfs_block_rsv_use_bytes(block_rsv, blocksize);

@@ -40,7 +40,7 @@
 
 			trips {
 				cpu-crit {
-					temperature	= <80000>;
+					temperature	= <90000>;
 					hysteresis	= <0>;
 					type		= "critical";
 				};
@@ -183,6 +183,7 @@
 
 			interrupt-controller;
 			#interrupt-cells = <2>;
+			gpio-ranges = <&gpio 0 0 54>;
 
 			/* Defines pin muxing groups according to
 			 * BCM2835-ARM-Peripherals.pdf page 102.
@@ -488,6 +489,7 @@
 					     "dsi0_ddr2",
 					     "dsi0_ddr";
 
+			status = "disabled";
 		};
 
 		thermal: thermal@7e212000 {

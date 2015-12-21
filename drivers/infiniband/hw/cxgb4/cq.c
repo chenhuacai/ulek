@@ -754,7 +754,7 @@ skip_cqe:
 static int __c4iw_poll_cq_one(struct c4iw_cq *chp, struct c4iw_qp *qhp,
 			      struct ib_wc *wc, struct c4iw_srq *srq)
 {
-	struct t4_cqe uninitialized_var(cqe);
+	struct t4_cqe cqe;
 	struct t4_wq *wq = qhp ? &qhp->wq : NULL;
 	u32 credit = 0;
 	u8 cqe_flushed;
@@ -1005,6 +1005,9 @@ int c4iw_create_cq(struct ib_cq *ibcq, const struct ib_cq_init_attr *attr,
 
 	pr_debug("ib_dev %p entries %d\n", ibdev, entries);
 	if (attr->flags)
+		return -EINVAL;
+
+	if (entries < 1 || entries > ibdev->attrs.max_cqe)
 		return -EINVAL;
 
 	if (vector >= rhp->rdev.lldi.nciq)

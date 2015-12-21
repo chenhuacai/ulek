@@ -108,7 +108,9 @@ static int pwm_imx_tpm_round_state(struct pwm_chip *chip,
 	p->prescale = prescale;
 
 	period_count = (clock_unit + ((1 << prescale) >> 1)) >> prescale;
-	p->mod = period_count;
+	if (period_count == 0)
+		return -EINVAL;
+	p->mod = period_count - 1;
 
 	/* calculate real period HW can support */
 	tmp = (u64)period_count << prescale;
@@ -404,6 +406,13 @@ static int __maybe_unused pwm_imx_tpm_suspend(struct device *dev)
 
 	if (tpm->enable_count > 0)
 		return -EBUSY;
+
+	/*
+	 * Force 'real_period' to be zero to force period update code
+	 * can be executed after system resume back, since suspend causes
+	 * the period related registers to become their reset values.
+	 */
+	tpm->real_period = 0;
 
 	clk_disable_unprepare(tpm->clk);
 

@@ -187,6 +187,8 @@ struct dasd_ccw_req {
 
 	void (*callback)(struct dasd_ccw_req *, void *data);
 	void *callback_data;
+	unsigned int proc_bytes;	/* bytes for partial completion */
+	unsigned int trkcount;		/* count formatted tracks */
 };
 
 /*
@@ -224,7 +226,7 @@ struct dasd_ccw_req {
  * The following flags are used to suppress output of certain errors.
  */
 #define DASD_CQR_SUPPRESS_NRF	4	/* Suppress 'No Record Found' error */
-#define DASD_CQR_SUPPRESS_FP	5	/* Suppress 'File Protected' error*/
+#define DASD_CQR_SUPPRESS_IT	5	/* Suppress 'Invalid Track' error*/
 #define DASD_CQR_SUPPRESS_IL	6	/* Suppress 'Incorrect Length' error */
 #define DASD_CQR_SUPPRESS_CR	7	/* Suppress 'Command Reject' error */
 
@@ -296,7 +298,7 @@ struct dasd_discipline {
 	 * e.g. verify that new path is compatible with the current
 	 * configuration.
 	 */
-	int (*verify_path)(struct dasd_device *, __u8);
+	int (*pe_handler)(struct dasd_device *, __u8);
 
 	/*
 	 * Last things to do when a device is set online, and first things
@@ -387,8 +389,9 @@ struct dasd_discipline {
 	int (*ext_pool_warn_thrshld)(struct dasd_device *);
 	int (*ext_pool_oos)(struct dasd_device *);
 	int (*ext_pool_exhaust)(struct dasd_device *, struct dasd_ccw_req *);
-	struct dasd_ccw_req *(*ese_format)(struct dasd_device *, struct dasd_ccw_req *);
-	void (*ese_read)(struct dasd_ccw_req *);
+	struct dasd_ccw_req *(*ese_format)(struct dasd_device *,
+					   struct dasd_ccw_req *, struct irb *);
+	int (*ese_read)(struct dasd_ccw_req *, struct irb *);
 };
 
 extern struct dasd_discipline *dasd_diag_discipline_pointer;
@@ -474,6 +477,11 @@ struct dasd_profile {
 	spinlock_t lock;
 };
 
+struct dasd_format_entry {
+	struct list_head list;
+	sector_t track;
+};
+
 struct dasd_device {
 	/* Block device stuff. */
 	struct dasd_block *block;
@@ -539,6 +547,7 @@ struct dasd_device {
 	struct dentry *debugfs_dentry;
 	struct dentry *hosts_dentry;
 	struct dasd_profile profile;
+	struct dasd_format_entry format_entry;
 };
 
 struct dasd_block {
@@ -564,6 +573,10 @@ struct dasd_block {
 
 	struct dentry *debugfs_dentry;
 	struct dasd_profile profile;
+
+	struct list_head format_list;
+	spinlock_t format_lock;
+	atomic_t trkcount;
 };
 
 struct dasd_attention_data {
@@ -710,6 +723,18 @@ dasd_check_blocksize(int bsize)
 	if (bsize < 512 || bsize > 4096 || !is_power_of_2(bsize))
 		return -EMEDIUMTYPE;
 	return 0;
+}
+
+/*
+ * return the callback data of the original request in case there are
+ * ERP requests build on top of it
+ */
+static inline void *dasd_get_callback_data(struct dasd_ccw_req *cqr)
+{
+	while (cqr->refers)
+		cqr = cqr->refers;
+
+	return cqr->callback_data;
 }
 
 /* externals in dasd.c */

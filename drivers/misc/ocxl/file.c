@@ -18,18 +18,15 @@ static struct class *ocxl_class;
 static struct mutex minors_idr_lock;
 static struct idr minors_idr;
 
-static struct ocxl_file_info *find_file_info(dev_t devno)
+static struct ocxl_file_info *find_and_get_file_info(dev_t devno)
 {
 	struct ocxl_file_info *info;
 
-	/*
-	 * We don't declare an RCU critical section here, as our AFU
-	 * is protected by a reference counter on the device. By the time the
-	 * info reference is removed from the idr, the ref count of
-	 * the device is already at 0, so no user API will access that AFU and
-	 * this function can't return it.
-	 */
+	mutex_lock(&minors_idr_lock);
 	info = idr_find(&minors_idr, MINOR(devno));
+	if (info)
+		get_device(&info->dev);
+	mutex_unlock(&minors_idr_lock);
 	return info;
 }
 
@@ -58,14 +55,16 @@ static int afu_open(struct inode *inode, struct file *file)
 
 	pr_debug("%s for device %x\n", __func__, inode->i_rdev);
 
-	info = find_file_info(inode->i_rdev);
+	info = find_and_get_file_info(inode->i_rdev);
 	if (!info)
 		return -ENODEV;
 
 	rc = ocxl_context_alloc(&ctx, info->afu, inode->i_mapping);
-	if (rc)
+	if (rc) {
+		put_device(&info->dev);
 		return rc;
-
+	}
+	put_device(&info->dev);
 	file->private_data = ctx;
 	return 0;
 }
@@ -260,6 +259,8 @@ static long afu_ioctl(struct file *file, unsigned int cmd,
 		if (IS_ERR(ev_ctx))
 			return PTR_ERR(ev_ctx);
 		rc = ocxl_irq_set_handler(ctx, irq_id, irq_handler, irq_free, ev_ctx);
+		if (rc)
+			eventfd_ctx_put(ev_ctx);
 		break;
 
 	case OCXL_IOCTL_GET_METADATA:
@@ -487,7 +488,6 @@ static void info_release(struct device *dev)
 {
 	struct ocxl_file_info *info = container_of(dev, struct ocxl_file_info, dev);
 
-	free_minor(info);
 	ocxl_afu_put(info->afu);
 	kfree(info);
 }
@@ -543,8 +543,11 @@ int ocxl_file_register_afu(struct ocxl_afu *afu)
 		goto err_put;
 
 	rc = device_register(&info->dev);
-	if (rc)
-		goto err_put;
+	if (rc) {
+		free_minor(info);
+		put_device(&info->dev);
+		return rc;
+	}
 
 	rc = ocxl_sysfs_register_afu(info);
 	if (rc)
@@ -560,7 +563,9 @@ int ocxl_file_register_afu(struct ocxl_afu *afu)
 
 err_unregister:
 	ocxl_sysfs_unregister_afu(info); // safe to call even if register failed
+	free_minor(info);
 	device_unregister(&info->dev);
+	return rc;
 err_put:
 	ocxl_afu_put(afu);
 	free_minor(info);
@@ -577,6 +582,7 @@ void ocxl_file_unregister_afu(struct ocxl_afu *afu)
 
 	ocxl_file_make_invisible(info);
 	ocxl_sysfs_unregister_afu(info);
+	free_minor(info);
 	device_unregister(&info->dev);
 }
 

@@ -12,6 +12,7 @@
 #include <net/cfg80211.h>
 #include <net/rtnetlink.h>
 #include <linux/etherdevice.h>
+#include <linux/math64.h>
 #include <linux/module.h>
 
 static struct wiphy *common_wiphy;
@@ -135,6 +136,32 @@ static struct ieee80211_supported_band band_5ghz = {
 /* Assigned at module init. Guaranteed locally-administered and unicast. */
 static u8 fake_router_bssid[ETH_ALEN] __ro_after_init = {};
 
+#define VIRT_WIFI_SSID "VirtWifi"
+#define VIRT_WIFI_SSID_LEN 8
+
+static void virt_wifi_inform_bss(struct wiphy *wiphy)
+{
+	u64 tsf = div_u64(ktime_get_boottime_ns(), 1000);
+	struct cfg80211_bss *informed_bss;
+	static const struct {
+		u8 tag;
+		u8 len;
+		u8 ssid[8];
+	} __packed ssid = {
+		.tag = WLAN_EID_SSID,
+		.len = VIRT_WIFI_SSID_LEN,
+		.ssid = VIRT_WIFI_SSID,
+	};
+
+	informed_bss = cfg80211_inform_bss(wiphy, &channel_5ghz,
+					   CFG80211_BSS_FTYPE_PRESP,
+					   fake_router_bssid, tsf,
+					   WLAN_CAPABILITY_ESS, 0,
+					   (void *)&ssid, sizeof(ssid),
+					   DBM_TO_MBM(-50), GFP_KERNEL);
+	cfg80211_put_bss(wiphy, informed_bss);
+}
+
 /* Called with the rtnl lock held. */
 static int virt_wifi_scan(struct wiphy *wiphy,
 			  struct cfg80211_scan_request *request)
@@ -155,28 +182,13 @@ static int virt_wifi_scan(struct wiphy *wiphy,
 /* Acquires and releases the rdev BSS lock. */
 static void virt_wifi_scan_result(struct work_struct *work)
 {
-	struct {
-		u8 tag;
-		u8 len;
-		u8 ssid[8];
-	} __packed ssid = {
-		.tag = WLAN_EID_SSID, .len = 8, .ssid = "VirtWifi",
-	};
-	struct cfg80211_bss *informed_bss;
 	struct virt_wifi_wiphy_priv *priv =
 		container_of(work, struct virt_wifi_wiphy_priv,
 			     scan_result.work);
 	struct wiphy *wiphy = priv_to_wiphy(priv);
 	struct cfg80211_scan_info scan_info = { .aborted = false };
 
-	informed_bss = cfg80211_inform_bss(wiphy, &channel_5ghz,
-					   CFG80211_BSS_FTYPE_PRESP,
-					   fake_router_bssid,
-					   ktime_get_boottime_ns(),
-					   WLAN_CAPABILITY_ESS, 0,
-					   (void *)&ssid, sizeof(ssid),
-					   DBM_TO_MBM(-50), GFP_KERNEL);
-	cfg80211_put_bss(wiphy, informed_bss);
+	virt_wifi_inform_bss(wiphy);
 
 	/* Schedules work which acquires and releases the rtnl lock. */
 	cfg80211_scan_done(priv->scan_request, &scan_info);
@@ -204,6 +216,8 @@ struct virt_wifi_netdev_priv {
 	struct net_device *upperdev;
 	u32 tx_packets;
 	u32 tx_failed;
+	u32 connect_requested_ssid_len;
+	u8 connect_requested_ssid[IEEE80211_MAX_SSID_LEN];
 	u8 connect_requested_bss[ETH_ALEN];
 	bool is_up;
 	bool is_connected;
@@ -220,14 +234,22 @@ static int virt_wifi_connect(struct wiphy *wiphy, struct net_device *netdev,
 	if (priv->being_deleted || !priv->is_up)
 		return -EBUSY;
 
+	if (!sme->ssid)
+		return -EINVAL;
+
+	priv->connect_requested_ssid_len = sme->ssid_len;
+	memcpy(priv->connect_requested_ssid, sme->ssid, sme->ssid_len);
+
 	could_schedule = schedule_delayed_work(&priv->connect, HZ * 2);
 	if (!could_schedule)
 		return -EBUSY;
 
-	if (sme->bssid)
+	if (sme->bssid) {
 		ether_addr_copy(priv->connect_requested_bss, sme->bssid);
-	else
+	} else {
+		virt_wifi_inform_bss(wiphy);
 		eth_zero_addr(priv->connect_requested_bss);
+	}
 
 	wiphy_debug(wiphy, "connect\n");
 
@@ -240,11 +262,16 @@ static void virt_wifi_connect_complete(struct work_struct *work)
 	struct virt_wifi_netdev_priv *priv =
 		container_of(work, struct virt_wifi_netdev_priv, connect.work);
 	u8 *requested_bss = priv->connect_requested_bss;
-	bool has_addr = !is_zero_ether_addr(requested_bss);
 	bool right_addr = ether_addr_equal(requested_bss, fake_router_bssid);
+	bool right_ssid = priv->connect_requested_ssid_len == VIRT_WIFI_SSID_LEN &&
+			  !memcmp(priv->connect_requested_ssid, VIRT_WIFI_SSID,
+				  priv->connect_requested_ssid_len);
 	u16 status = WLAN_STATUS_SUCCESS;
 
-	if (!priv->is_up || (has_addr && !right_addr))
+	if (is_zero_ether_addr(requested_bss))
+		requested_bss = NULL;
+
+	if (!priv->is_up || (requested_bss && !right_addr) || !right_ssid)
 		status = WLAN_STATUS_UNSPECIFIED_FAILURE;
 	else
 		priv->is_connected = true;
@@ -450,7 +477,6 @@ static void virt_wifi_net_device_destructor(struct net_device *dev)
 	 */
 	kfree(dev->ieee80211_ptr);
 	dev->ieee80211_ptr = NULL;
-	free_netdev(dev);
 }
 
 /* No lock interaction. */
@@ -458,7 +484,7 @@ static void virt_wifi_setup(struct net_device *dev)
 {
 	ether_setup(dev);
 	dev->netdev_ops = &virt_wifi_ops;
-	dev->priv_destructor = virt_wifi_net_device_destructor;
+	dev->needs_free_netdev  = true;
 }
 
 /* Called in a RCU read critical section from netif_receive_skb */
@@ -544,6 +570,7 @@ static int virt_wifi_newlink(struct net *src_net, struct net_device *dev,
 		goto unregister_netdev;
 	}
 
+	dev->priv_destructor = virt_wifi_net_device_destructor;
 	priv->being_deleted = false;
 	priv->is_connected = false;
 	priv->is_up = false;

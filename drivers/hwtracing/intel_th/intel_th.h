@@ -47,11 +47,13 @@ struct intel_th_output {
 /**
  * struct intel_th_drvdata - describes hardware capabilities and quirks
  * @tscu_enable:	device needs SW to enable time stamping unit
+ * @multi_is_broken:	device has multiblock mode is broken
  * @has_mintctl:	device has interrupt control (MINTCTL) register
  * @host_mode_only:	device can only operate in 'host debugger' mode
  */
 struct intel_th_drvdata {
 	unsigned int	tscu_enable        : 1,
+			multi_is_broken    : 1,
 			has_mintctl        : 1,
 			host_mode_only     : 1;
 };
@@ -141,6 +143,7 @@ intel_th_output_assigned(struct intel_th_device *thdev)
  * @remove:	remove method
  * @assign:	match a given output type device against available outputs
  * @unassign:	deassociate an output type device from an output port
+ * @prepare:	prepare output port for tracing
  * @enable:	enable tracing for a given output device
  * @disable:	disable tracing for a given output device
  * @irq:	interrupt callback
@@ -162,6 +165,8 @@ struct intel_th_driver {
 					  struct intel_th_device *othdev);
 	void			(*unassign)(struct intel_th_device *thdev,
 					    struct intel_th_device *othdev);
+	void			(*prepare)(struct intel_th_device *thdev,
+					   struct intel_th_output *output);
 	void			(*enable)(struct intel_th_device *thdev,
 					  struct intel_th_output *output);
 	void			(*trig_switch)(struct intel_th_device *thdev,
@@ -261,6 +266,7 @@ enum th_mmio_idx {
  * @num_thdevs:	number of devices in the @thdev array
  * @num_resources:	number of resources in the @resource array
  * @irq:	irq number
+ * @num_irqs:	number of IRQs is use
  * @id:		this Intel TH controller's device ID in the system
  * @major:	device node major for output devices
  */
@@ -277,6 +283,7 @@ struct intel_th {
 	unsigned int		num_thdevs;
 	unsigned int		num_resources;
 	int			irq;
+	int			num_irqs;
 
 	int			id;
 	int			major;

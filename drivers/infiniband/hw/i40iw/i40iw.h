@@ -398,8 +398,8 @@ static inline struct i40iw_qp *to_iwqp(struct ib_qp *ibqp)
 }
 
 /* i40iw.c */
-void i40iw_add_ref(struct ib_qp *);
-void i40iw_rem_ref(struct ib_qp *);
+void i40iw_qp_add_ref(struct ib_qp *ibqp);
+void i40iw_qp_rem_ref(struct ib_qp *ibqp);
 struct ib_qp *i40iw_get_qp(struct ib_device *, int);
 
 void i40iw_flush_wqes(struct i40iw_device *iwdev,
@@ -411,9 +411,8 @@ void i40iw_manage_arp_cache(struct i40iw_device *iwdev,
 			    bool ipv4,
 			    u32 action);
 
-int i40iw_manage_apbvt(struct i40iw_device *iwdev,
-		       u16 accel_local_port,
-		       bool add_port);
+enum i40iw_status_code i40iw_manage_apbvt(struct i40iw_device *iwdev,
+					  u16 accel_local_port, bool add_port);
 
 struct i40iw_cqp_request *i40iw_get_cqp_request(struct i40iw_cqp *cqp, bool wait);
 void i40iw_free_cqp_request(struct i40iw_cqp *cqp, struct i40iw_cqp_request *cqp_request);
@@ -543,9 +542,8 @@ enum i40iw_status_code i40iw_manage_qhash(struct i40iw_device *iwdev,
 					  bool wait);
 void i40iw_receive_ilq(struct i40iw_sc_vsi *vsi, struct i40iw_puda_buf *rbuf);
 void i40iw_free_sqbuf(struct i40iw_sc_vsi *vsi, void *bufp);
-void i40iw_free_qp_resources(struct i40iw_device *iwdev,
-			     struct i40iw_qp *iwqp,
-			     u32 qp_num);
+void i40iw_free_qp_resources(struct i40iw_qp *iwqp);
+
 enum i40iw_status_code i40iw_obj_aligned_mem(struct i40iw_device *iwdev,
 					     struct i40iw_dma_mem *memptr,
 					     u32 size, u32 mask);

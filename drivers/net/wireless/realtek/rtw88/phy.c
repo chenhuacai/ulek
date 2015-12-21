@@ -118,7 +118,7 @@ static void rtw_phy_cck_pd_init(struct rtw_dev *rtwdev)
 
 	for (i = 0; i <= RTW_CHANNEL_WIDTH_40; i++) {
 		for (j = 0; j < RTW_RF_PATH_MAX; j++)
-			dm_info->cck_pd_lv[i][j] = 0;
+			dm_info->cck_pd_lv[i][j] = CCK_PD_LV0;
 	}
 
 	dm_info->cck_fa_avg = CCK_FA_AVG_RESET;
@@ -461,7 +461,6 @@ static void rtw_phy_dpk_track(struct rtw_dev *rtwdev)
 		chip->ops->dpk_track(rtwdev);
 }
 
-#define CCK_PD_LV_MAX		5
 #define CCK_PD_FA_LV1_MIN	1000
 #define CCK_PD_FA_LV0_MAX	500
 
@@ -471,10 +470,10 @@ static u8 rtw_phy_cck_pd_lv_unlink(struct rtw_dev *rtwdev)
 	u32 cck_fa_avg = dm_info->cck_fa_avg;
 
 	if (cck_fa_avg > CCK_PD_FA_LV1_MIN)
-		return 1;
+		return CCK_PD_LV1;
 
 	if (cck_fa_avg < CCK_PD_FA_LV0_MAX)
-		return 0;
+		return CCK_PD_LV0;
 
 	return CCK_PD_LV_MAX;
 }
@@ -494,15 +493,15 @@ static u8 rtw_phy_cck_pd_lv_link(struct rtw_dev *rtwdev)
 	u32 cck_fa_avg = dm_info->cck_fa_avg;
 
 	if (igi > CCK_PD_IGI_LV4_VAL && rssi > CCK_PD_RSSI_LV4_VAL)
-		return 4;
+		return CCK_PD_LV4;
 	if (igi > CCK_PD_IGI_LV3_VAL && rssi > CCK_PD_RSSI_LV3_VAL)
-		return 3;
+		return CCK_PD_LV3;
 	if (igi > CCK_PD_IGI_LV2_VAL || rssi > CCK_PD_RSSI_LV2_VAL)
-		return 2;
+		return CCK_PD_LV2;
 	if (cck_fa_avg > CCK_PD_FA_LV1_MIN)
-		return 1;
+		return CCK_PD_LV1;
 	if (cck_fa_avg < CCK_PD_FA_LV0_MAX)
-		return 0;
+		return CCK_PD_LV0;
 
 	return CCK_PD_LV_MAX;
 }
@@ -1452,7 +1451,7 @@ void rtw_phy_load_tables(struct rtw_dev *rtwdev)
 	}
 }
 
-static u8 rtw_get_channel_group(u8 channel)
+static u8 rtw_get_channel_group(u8 channel, u8 rate)
 {
 	switch (channel) {
 	default:
@@ -1496,6 +1495,7 @@ static u8 rtw_get_channel_group(u8 channel)
 	case 106:
 		return 4;
 	case 14:
+		return rate <= DESC_RATE11M ? 5 : 4;
 	case 108:
 	case 110:
 	case 112:
@@ -1745,7 +1745,7 @@ void rtw_get_tx_power_params(struct rtw_dev *rtwdev, u8 path, u8 rate, u8 bw,
 	s8 *limit = &pwr_param->pwr_limit;
 
 	pwr_idx = &rtwdev->efuse.txpwr_idx_table[path];
-	group = rtw_get_channel_group(ch);
+	group = rtw_get_channel_group(ch, rate);
 
 	/* base power index for 2.4G/5G */
 	if (ch <= 14) {

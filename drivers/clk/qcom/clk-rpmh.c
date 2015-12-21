@@ -143,12 +143,22 @@ static inline bool has_state_changed(struct clk_rpmh *c, u32 state)
 		!= (c->aggr_state & BIT(state));
 }
 
+static int clk_rpmh_send(struct clk_rpmh *c, enum rpmh_state state,
+			 struct tcs_cmd *cmd, bool wait)
+{
+	if (wait)
+		return rpmh_write(c->dev, state, cmd, 1);
+
+	return rpmh_write_async(c->dev, state, cmd, 1);
+}
+
 static int clk_rpmh_send_aggregate_command(struct clk_rpmh *c)
 {
 	struct tcs_cmd cmd = { 0 };
 	u32 cmd_state, on_val;
 	enum rpmh_state state = RPMH_SLEEP_STATE;
 	int ret;
+	bool wait;
 
 	cmd.addr = c->res_addr;
 	cmd_state = c->aggr_state;
@@ -159,7 +169,8 @@ static int clk_rpmh_send_aggregate_command(struct clk_rpmh *c)
 			if (cmd_state & BIT(state))
 				cmd.data = on_val;
 
-			ret = rpmh_write_async(c->dev, state, &cmd, 1);
+			wait = cmd_state && state == RPMH_ACTIVE_ONLY_STATE;
+			ret = clk_rpmh_send(c, state, &cmd, wait);
 			if (ret) {
 				dev_err(c->dev, "set %s state of %s failed: (%d)\n",
 					!state ? "sleep" :
@@ -248,38 +259,35 @@ static int clk_rpmh_bcm_send_cmd(struct clk_rpmh *c, bool enable)
 {
 	struct tcs_cmd cmd = { 0 };
 	u32 cmd_state;
-	int ret;
+	int ret = 0;
 
 	mutex_lock(&rpmh_clk_lock);
-
-	cmd_state = 0;
 	if (enable) {
 		cmd_state = 1;
 		if (c->aggr_state)
 			cmd_state = c->aggr_state;
+	} else {
+		cmd_state = 0;
 	}
 
-	if (c->last_sent_aggr_state == cmd_state) {
-		mutex_unlock(&rpmh_clk_lock);
-		return 0;
+	cmd_state = min(cmd_state, BCM_TCS_CMD_VOTE_MASK);
+
+	if (c->last_sent_aggr_state != cmd_state) {
+		cmd.addr = c->res_addr;
+		cmd.data = BCM_TCS_CMD(1, enable, 0, cmd_state);
+
+		ret = clk_rpmh_send(c, RPMH_ACTIVE_ONLY_STATE, &cmd, enable);
+		if (ret) {
+			dev_err(c->dev, "set active state of %s failed: (%d)\n",
+				c->res_name, ret);
+		} else {
+			c->last_sent_aggr_state = cmd_state;
+		}
 	}
-
-	cmd.addr = c->res_addr;
-	cmd.data = BCM_TCS_CMD(1, enable, 0, cmd_state);
-
-	ret = rpmh_write_async(c->dev, RPMH_ACTIVE_ONLY_STATE, &cmd, 1);
-	if (ret) {
-		dev_err(c->dev, "set active state of %s failed: (%d)\n",
-			c->res_name, ret);
-		mutex_unlock(&rpmh_clk_lock);
-		return ret;
-	}
-
-	c->last_sent_aggr_state = cmd_state;
 
 	mutex_unlock(&rpmh_clk_lock);
 
-	return 0;
+	return ret;
 }
 
 static int clk_rpmh_bcm_prepare(struct clk_hw *hw)

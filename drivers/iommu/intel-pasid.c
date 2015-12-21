@@ -166,6 +166,9 @@ int intel_pasid_alloc_table(struct device *dev)
 attach_out:
 	device_attach_pasid_table(info, pasid_table);
 
+	if (!ecap_coherent(info->iommu->ecap))
+		clflush_cache_range(pasid_table->table, (1 << order) * PAGE_SIZE);
+
 	return 0;
 }
 
@@ -250,6 +253,10 @@ struct pasid_entry *intel_pasid_get_entry(struct device *dev, int pasid)
 
 		WRITE_ONCE(dir[dir_index].val,
 			   (u64)virt_to_phys(entries) | PASID_PTE_PRESENT);
+		if (!ecap_coherent(info->iommu->ecap)) {
+			clflush_cache_range(entries, VTD_PAGE_SIZE);
+			clflush_cache_range(&dir[dir_index].val, sizeof(*dir));
+		}
 	}
 	spin_unlock(&pasid_lock);
 
@@ -499,8 +506,16 @@ int intel_pasid_setup_first_level(struct intel_iommu *iommu,
 	}
 
 #ifdef CONFIG_X86
-	if (cpu_feature_enabled(X86_FEATURE_LA57))
-		pasid_set_flpm(pte, 1);
+	/* Both CPU and IOMMU paging mode need to match */
+	if (cpu_feature_enabled(X86_FEATURE_LA57)) {
+		if (cap_5lp_support(iommu->cap)) {
+			pasid_set_flpm(pte, 1);
+		} else {
+			pr_err("VT-d has no 5-level paging support for CPU\n");
+			pasid_clear_entry(pte);
+			return -EINVAL;
+		}
+	}
 #endif /* CONFIG_X86 */
 
 	pasid_set_domain_id(pte, did);

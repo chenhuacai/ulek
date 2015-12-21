@@ -64,9 +64,16 @@ static void nexthop_free_mpath(struct nexthop *nh)
 	int i;
 
 	nhg = rcu_dereference_raw(nh->nh_grp);
-	for (i = 0; i < nhg->num_nh; ++i)
-		WARN_ON(nhg->nh_entries[i].nh);
+	for (i = 0; i < nhg->num_nh; ++i) {
+		struct nh_grp_entry *nhge = &nhg->nh_entries[i];
 
+		WARN_ON(!list_empty(&nhge->nh_list));
+		nexthop_put(nhge->nh);
+	}
+
+	WARN_ON(nhg->spare == nhg);
+
+	kfree(nhg->spare);
 	kfree(nhg);
 }
 
@@ -194,9 +201,10 @@ static int nla_put_nh_group(struct sk_buff *skb, struct nh_group *nhg)
 
 	p = nla_data(nla);
 	for (i = 0; i < nhg->num_nh; ++i) {
-		p->id = nhg->nh_entries[i].nh->id;
-		p->weight = nhg->nh_entries[i].weight - 1;
-		p += 1;
+		*p++ = (struct nexthop_grp) {
+			.id = nhg->nh_entries[i].nh->id,
+			.weight = nhg->nh_entries[i].weight - 1,
+		};
 	}
 
 	return 0;
@@ -277,6 +285,7 @@ out:
 	return 0;
 
 nla_put_failure:
+	nlmsg_cancel(skb, nlh);
 	return -EMSGSIZE;
 }
 
@@ -322,7 +331,9 @@ static size_t nh_nlmsg_size_single(struct nexthop *nh)
 
 static size_t nh_nlmsg_size(struct nexthop *nh)
 {
-	size_t sz = nla_total_size(4);    /* NHA_ID */
+	size_t sz = NLMSG_ALIGN(sizeof(struct nhmsg));
+
+	sz += nla_total_size(4); /* NHA_ID */
 
 	if (nh->is_group)
 		sz += nh_nlmsg_size_grp(nh);
@@ -393,7 +404,7 @@ static int nh_check_attr_group(struct net *net, struct nlattr *tb[],
 	struct nexthop_grp *nhg;
 	unsigned int i, j;
 
-	if (len & (sizeof(struct nexthop_grp) - 1)) {
+	if (!len || len & (sizeof(struct nexthop_grp) - 1)) {
 		NL_SET_ERR_MSG(extack,
 			       "Invalid length for nexthop group attribute");
 		return -EINVAL;
@@ -432,7 +443,7 @@ static int nh_check_attr_group(struct net *net, struct nlattr *tb[],
 		if (!valid_group_nh(nh, len, extack))
 			return -EINVAL;
 	}
-	for (i = NHA_GROUP + 1; i < __NHA_MAX; ++i) {
+	for (i = NHA_GROUP_TYPE + 1; i < __NHA_MAX; ++i) {
 		if (!tb[i])
 			continue;
 
@@ -692,41 +703,56 @@ static void nh_group_rebalance(struct nh_group *nhg)
 	}
 }
 
-static void remove_nh_grp_entry(struct nh_grp_entry *nhge,
-				struct nh_group *nhg,
+static void remove_nh_grp_entry(struct net *net, struct nh_grp_entry *nhge,
 				struct nl_info *nlinfo)
 {
+	struct nh_grp_entry *nhges, *new_nhges;
+	struct nexthop *nhp = nhge->nh_parent;
 	struct nexthop *nh = nhge->nh;
-	struct nh_grp_entry *nhges;
-	bool found = false;
-	int i;
+	struct nh_group *nhg, *newg;
+	int i, j;
 
 	WARN_ON(!nh);
 
-	nhges = nhg->nh_entries;
-	for (i = 0; i < nhg->num_nh; ++i) {
-		if (found) {
-			nhges[i-1].nh = nhges[i].nh;
-			nhges[i-1].weight = nhges[i].weight;
-			list_del(&nhges[i].nh_list);
-			list_add(&nhges[i-1].nh_list, &nhges[i-1].nh->grp_list);
-		} else if (nhg->nh_entries[i].nh == nh) {
-			found = true;
-		}
+	nhg = rtnl_dereference(nhp->nh_grp);
+	newg = nhg->spare;
+
+	/* last entry, keep it visible and remove the parent */
+	if (nhg->num_nh == 1) {
+		remove_nexthop(net, nhp, nlinfo);
+		return;
 	}
 
-	if (WARN_ON(!found))
-		return;
+	newg->has_v4 = nhg->has_v4;
+	newg->mpath = nhg->mpath;
+	newg->num_nh = nhg->num_nh;
 
-	nhg->num_nh--;
-	nhg->nh_entries[nhg->num_nh].nh = NULL;
+	/* copy old entries to new except the one getting removed */
+	nhges = nhg->nh_entries;
+	new_nhges = newg->nh_entries;
+	for (i = 0, j = 0; i < nhg->num_nh; ++i) {
+		/* current nexthop getting removed */
+		if (nhg->nh_entries[i].nh == nh) {
+			newg->num_nh--;
+			continue;
+		}
 
-	nh_group_rebalance(nhg);
+		list_del(&nhges[i].nh_list);
+		new_nhges[j].nh_parent = nhges[i].nh_parent;
+		new_nhges[j].nh = nhges[i].nh;
+		new_nhges[j].weight = nhges[i].weight;
+		list_add(&new_nhges[j].nh_list, &new_nhges[j].nh->grp_list);
+		j++;
+	}
 
-	nexthop_put(nh);
+	nh_group_rebalance(newg);
+	rcu_assign_pointer(nhp->nh_grp, newg);
+
+	list_del(&nhge->nh_list);
+	nexthop_put(nhge->nh);
 
 	if (nlinfo)
-		nexthop_notify(RTM_NEWNEXTHOP, nhge->nh_parent, nlinfo);
+		nexthop_notify(RTM_NEWNEXTHOP, nhp, nlinfo);
 }
 
 static void remove_nexthop_from_groups(struct net *net, struct nexthop *nh,
@@ -734,17 +760,11 @@ static void remove_nexthop_from_groups(struct net *net, struct nexthop *nh,
 {
 	struct nh_grp_entry *nhge, *tmp;
 
-	list_for_each_entry_safe(nhge, tmp, &nh->grp_list, nh_list) {
-		struct nh_group *nhg;
+	list_for_each_entry_safe(nhge, tmp, &nh->grp_list, nh_list)
+		remove_nh_grp_entry(net, nhge, nlinfo);
 
-		list_del(&nhge->nh_list);
-		nhg = rtnl_dereference(nhge->nh_parent->nh_grp);
-		remove_nh_grp_entry(nhge, nhg, nlinfo);
-
-		/* if this group has no more entries then remove it */
-		if (!nhg->num_nh)
-			remove_nexthop(net, nhge->nh_parent, nlinfo);
-	}
+	/* make sure all see the newly published array before releasing rtnl */
+	synchronize_net();
 }
 
 static void remove_nexthop_group(struct nexthop *nh, struct nl_info *nlinfo)
@@ -758,10 +778,7 @@ static void remove_nexthop_group(struct nexthop *nh, struct nl_info *nlinfo)
 		if (WARN_ON(!nhge->nh))
 			continue;
 
-		list_del(&nhge->nh_list);
-		nexthop_put(nhge->nh);
-		nhge->nh = NULL;
-		nhg->num_nh--;
+		list_del_init(&nhge->nh_list);
 	}
 }
 
@@ -823,15 +840,36 @@ static void remove_nexthop(struct net *net, struct nexthop *nh,
 /* if any FIB entries reference this nexthop, any dst entries
  * need to be regenerated
  */
-static void nh_rt_cache_flush(struct net *net, struct nexthop *nh)
+static void nh_rt_cache_flush(struct net *net, struct nexthop *nh,
+			      struct nexthop *replaced_nh)
 {
 	struct fib6_info *f6i;
+	struct nh_group *nhg;
+	int i;
 
 	if (!list_empty(&nh->fi_list))
 		rt_cache_flush(net);
 
 	list_for_each_entry(f6i, &nh->f6i_list, nh_list)
 		ipv6_stub->fib6_update_sernum(net, f6i);
+
+	/* if an IPv6 group was replaced, we have to release all old
+	 * dsts to make sure all refcounts are released
+	 */
+	if (!replaced_nh->is_group)
+		return;
+
+	/* new dsts must use only the new nexthop group */
+	synchronize_net();
+
+	nhg = rtnl_dereference(replaced_nh->nh_grp);
+	for (i = 0; i < nhg->num_nh; i++) {
+		struct nh_grp_entry *nhge = &nhg->nh_entries[i];
+		struct nh_info *nhi = rtnl_dereference(nhge->nh->nh_info);
+
+		if (nhi->family == AF_INET6)
+			ipv6_stub->fib6_nh_release_dsts(&nhi->fib6_nh);
+	}
 }
 
 static int replace_nexthop_grp(struct net *net, struct nexthop *old,
@@ -978,7 +1016,7 @@ static int replace_nexthop(struct net *net, struct nexthop *old,
 		err = replace_nexthop_single(net, old, new, extack);
 
 	if (!err) {
-		nh_rt_cache_flush(net, old);
+		nh_rt_cache_flush(net, old, new);
 
 		__remove_nexthop(net, new, NULL);
 		nexthop_put(new);
@@ -1049,7 +1087,7 @@ out:
 
 /* rtnl */
 /* remove all nexthops tied to a device being deleted */
-static void nexthop_flush_dev(struct net_device *dev)
+static void nexthop_flush_dev(struct net_device *dev, unsigned long event)
 {
 	unsigned int hash = nh_dev_hashfn(dev->ifindex);
 	struct net *net = dev_net(dev);
@@ -1059,6 +1097,10 @@ static void nexthop_flush_dev(struct net_device *dev)
 
 	hlist_for_each_entry_safe(nhi, n, head, dev_hash) {
 		if (nhi->fib_nhc.nhc_dev != dev)
+			continue;
+
+		if (nhi->reject_nh &&
+		    (event == NETDEV_DOWN || event == NETDEV_CHANGE))
 			continue;
 
 		remove_nexthop(net, nhi->nh_parent, NULL);
@@ -1084,9 +1126,13 @@ static struct nexthop *nexthop_create_group(struct net *net,
 {
 	struct nlattr *grps_attr = cfg->nh_grp;
 	struct nexthop_grp *entry = nla_data(grps_attr);
+	u16 num_nh = nla_len(grps_attr) / sizeof(*entry);
 	struct nh_group *nhg;
 	struct nexthop *nh;
 	int i;
+
+	if (WARN_ON(!num_nh))
+		return ERR_PTR(-EINVAL);
 
 	nh = nexthop_alloc();
 	if (!nh)
@@ -1094,11 +1140,20 @@ static struct nexthop *nexthop_create_group(struct net *net,
 
 	nh->is_group = 1;
 
-	nhg = nexthop_grp_alloc(nla_len(grps_attr) / sizeof(*entry));
+	nhg = nexthop_grp_alloc(num_nh);
 	if (!nhg) {
 		kfree(nh);
 		return ERR_PTR(-ENOMEM);
 	}
+
+	/* spare group used for removals */
+	nhg->spare = nexthop_grp_alloc(num_nh);
+	if (!nhg) {
+		kfree(nhg);
+		kfree(nh);
+		return NULL;
+	}
+	nhg->spare->spare = nhg;
 
 	for (i = 0; i < nhg->num_nh; ++i) {
 		struct nexthop *nhe;
@@ -1128,9 +1183,12 @@ static struct nexthop *nexthop_create_group(struct net *net,
 	return nh;
 
 out_no_nh:
-	for (; i >= 0; --i)
+	for (i--; i >= 0; --i) {
+		list_del(&nhg->nh_entries[i].nh_list);
 		nexthop_put(nhg->nh_entries[i].nh);
+	}
 
+	kfree(nhg->spare);
 	kfree(nhg);
 	kfree(nh);
 
@@ -1147,6 +1205,7 @@ static int nh_create_ipv4(struct net *net, struct nexthop *nh,
 		.fc_gw4   = cfg->gw.ipv4,
 		.fc_gw_family = cfg->gw.ipv4 ? AF_INET : 0,
 		.fc_flags = cfg->nh_flags,
+		.fc_nlinfo = cfg->nlinfo,
 		.fc_encap = cfg->nh_encap,
 		.fc_encap_type = cfg->nh_encap_type,
 	};
@@ -1164,7 +1223,7 @@ static int nh_create_ipv4(struct net *net, struct nexthop *nh,
 	if (!err) {
 		nh->nh_flags = fib_nh->fib_nh_flags;
 		fib_info_update_nhc_saddr(net, &fib_nh->nh_common,
-					  fib_nh->fib_nh_scope);
+					  !fib_nh->fib_nh_scope ? 0 : fib_nh->fib_nh_scope - 1);
 	} else {
 		fib_nh_release(net, fib_nh);
 	}
@@ -1182,6 +1241,7 @@ static int nh_create_ipv6(struct net *net,  struct nexthop *nh,
 		.fc_ifindex = cfg->nh_ifindex,
 		.fc_gateway = cfg->gw.ipv6,
 		.fc_flags = cfg->nh_flags,
+		.fc_nlinfo = cfg->nlinfo,
 		.fc_encap = cfg->nh_encap,
 		.fc_encap_type = cfg->nh_encap_type,
 	};
@@ -1193,11 +1253,15 @@ static int nh_create_ipv6(struct net *net,  struct nexthop *nh,
 	/* sets nh_dev if successful */
 	err = ipv6_stub->fib6_nh_init(net, fib6_nh, &fib6_cfg, GFP_KERNEL,
 				      extack);
-	if (err)
+	if (err) {
+		/* IPv6 is not enabled, don't call fib6_nh_release */
+		if (err == -EAFNOSUPPORT)
+			goto out;
 		ipv6_stub->fib6_nh_release(fib6_nh);
-	else
+	} else {
 		nh->nh_flags = fib6_nh->fib_nh_flags;
-
+	}
+out:
 	return err;
 }
 
@@ -1762,11 +1826,11 @@ static int nh_netdev_event(struct notifier_block *this,
 	switch (event) {
 	case NETDEV_DOWN:
 	case NETDEV_UNREGISTER:
-		nexthop_flush_dev(dev);
+		nexthop_flush_dev(dev, event);
 		break;
 	case NETDEV_CHANGE:
 		if (!(dev_get_flags(dev) & (IFF_RUNNING | IFF_LOWER_UP)))
-			nexthop_flush_dev(dev);
+			nexthop_flush_dev(dev, event);
 		break;
 	case NETDEV_CHANGEMTU:
 		info_ext = ptr;

@@ -28,7 +28,7 @@ struct timestamp_event_queue {
 
 struct ptp_clock {
 	struct posix_clock clock;
-	struct device *dev;
+	struct device dev;
 	struct ptp_clock_info *info;
 	dev_t devid;
 	int index; /* index into clocks.map */
@@ -55,9 +55,13 @@ struct ptp_clock {
  * that a writer might concurrently increment the tail does not
  * matter, since the queue remains nonempty nonetheless.
  */
-static inline int queue_cnt(struct timestamp_event_queue *q)
+static inline int queue_cnt(const struct timestamp_event_queue *q)
 {
-	int cnt = q->tail - q->head;
+	/*
+	 * Paired with WRITE_ONCE() in enqueue_external_timestamp(),
+	 * ptp_read(), extts_fifo_show().
+	 */
+	int cnt = READ_ONCE(q->tail) - READ_ONCE(q->head);
 	return cnt < 0 ? PTP_MAX_TIMESTAMPS + cnt : cnt;
 }
 

@@ -115,6 +115,7 @@ static void pci_slot_release(struct kobject *kobj)
 	up_read(&pci_bus_sem);
 
 	list_del(&slot->list);
+	pci_bus_put(slot->bus);
 
 	kfree(slot);
 }
@@ -296,7 +297,7 @@ placeholder:
 		goto err;
 	}
 
-	slot->bus = parent;
+	slot->bus = pci_bus_get(parent);
 	slot->number = slot_nr;
 
 	slot->kobj.kset = pci_slots_kset;
@@ -304,16 +305,20 @@ placeholder:
 	slot_name = make_slot_name(name);
 	if (!slot_name) {
 		err = -ENOMEM;
+		pci_bus_put(slot->bus);
+		kfree(slot);
 		goto err;
 	}
 
-	err = kobject_init_and_add(&slot->kobj, &pci_slot_ktype, NULL,
-				   "%s", slot_name);
-	if (err)
-		goto err;
-
 	INIT_LIST_HEAD(&slot->list);
 	list_add(&slot->list, &parent->slots);
+
+	err = kobject_init_and_add(&slot->kobj, &pci_slot_ktype, NULL,
+				   "%s", slot_name);
+	if (err) {
+		kobject_put(&slot->kobj);
+		goto err;
+	}
 
 	down_read(&pci_bus_sem);
 	list_for_each_entry(dev, &parent->devices, bus_list)
@@ -329,7 +334,6 @@ out:
 	mutex_unlock(&pci_slot_mutex);
 	return slot;
 err:
-	kfree(slot);
 	slot = ERR_PTR(err);
 	goto out;
 }

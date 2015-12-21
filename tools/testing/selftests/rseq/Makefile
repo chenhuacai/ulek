@@ -4,9 +4,11 @@ ifneq ($(shell $(CC) --version 2>&1 | head -n 1 | grep clang),)
 CLANG_FLAGS += -no-integrated-as
 endif
 
-CFLAGS += -O2 -Wall -g -I./ -I../../../../usr/include/ -L./ -Wl,-rpath=./ \
-	  $(CLANG_FLAGS)
-LDLIBS += -lpthread
+top_srcdir = ../../../..
+
+CFLAGS += -O2 -Wall -g -I./ -I../../../../usr/include/ -L$(OUTPUT) -Wl,-rpath=./ \
+	  $(CLANG_FLAGS) -I$(top_srcdir)/tools/include
+LDLIBS += -lpthread -ldl
 
 # Own dependencies because we only want to build against 1st prerequisite, but
 # still track changes to header files and depend on shared object.
@@ -18,6 +20,8 @@ TEST_GEN_PROGS = basic_test basic_percpu_ops_test param_test \
 TEST_GEN_PROGS_EXTENDED = librseq.so
 
 TEST_PROGS = run_param_test.sh
+
+TEST_FILES := settings
 
 include ../lib.mk
 

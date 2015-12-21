@@ -62,12 +62,15 @@ cleanup() {
 	if [[ -f "${infile}" ]]; then
 		rm "${infile}"
 	fi
+
+	if [[ -n $server_pid ]]; then
+		kill $server_pid 2> /dev/null
+	fi
 }
 
 server_listen() {
 	ip netns exec "${ns2}" nc "${netcat_opt}" -l -p "${port}" > "${outfile}" &
 	server_pid=$!
-	sleep 0.2
 }
 
 client_connect() {
@@ -77,6 +80,7 @@ client_connect() {
 
 verify_data() {
 	wait "${server_pid}"
+	server_pid=
 	# sha1sum returns two fields [sha1] [filepath]
 	# convert to bash array and access first elem
 	insum=($(sha1sum ${infile}))
@@ -85,6 +89,16 @@ verify_data() {
 		echo "data mismatch"
 		exit 1
 	fi
+}
+
+wait_for_port() {
+	for i in $(seq 20); do
+		if ip netns exec "${ns2}" ss ${2:--4}OHntl | grep -q "$1"; then
+			return 0
+		fi
+		sleep 0.1
+	done
+	return 1
 }
 
 set -e
@@ -178,6 +192,7 @@ setup
 # basic communication works
 echo "test basic connectivity"
 server_listen
+wait_for_port ${port} ${netcat_opt}
 client_connect
 verify_data
 
@@ -189,6 +204,7 @@ ip netns exec "${ns1}" tc filter add dev veth1 egress \
 	section "encap_${tuntype}_${mac}"
 echo "test bpf encap without decap (expect failure)"
 server_listen
+wait_for_port ${port} ${netcat_opt}
 ! client_connect
 
 if [[ "$tuntype" =~ "udp" ]]; then

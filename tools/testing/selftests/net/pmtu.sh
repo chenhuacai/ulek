@@ -11,9 +11,9 @@
 #	R1 and R2 (also implemented with namespaces), with different MTUs:
 #
 #	  segment a_r1    segment b_r1		a_r1: 2000
-#	.--------------R1--------------.	a_r2: 1500
-#	A                               B	a_r3: 2000
-#	'--------------R2--------------'	a_r4: 1400
+#	.--------------R1--------------.	b_r1: 1400
+#	A                               B	a_r2: 2000
+#	'--------------R2--------------'	b_r2: 1500
 #	  segment a_r2    segment b_r2
 #
 #	Check that PMTU exceptions with the correct PMTU are created. Then
@@ -119,7 +119,15 @@
 # - list_flush_ipv6_exception
 #	Using the same topology as in pmtu_ipv6, create exceptions, and check
 #	they are shown when listing exception caches, gone after flushing them
-
+#
+# - pmtu_ipv4_route_change
+#	Use the same topology as in pmtu_ipv4, but issue a route replacement
+#	command and delete the corresponding device afterward. This tests for
+#	proper cleanup of the PMTU exceptions by the route replacement path.
+#	Device unregistration should complete successfully
+#
+# - pmtu_ipv6_route_change
+#	Same as above but with IPv6
 
 # Kselftest framework requirement - SKIP code is 4.
 ksft_skip=4
@@ -161,7 +169,9 @@ tests="
 	cleanup_ipv4_exception		ipv4: cleanup of cached exceptions	1
 	cleanup_ipv6_exception		ipv6: cleanup of cached exceptions	1
 	list_flush_ipv4_exception	ipv4: list and flush cached exceptions	1
-	list_flush_ipv6_exception	ipv6: list and flush cached exceptions	1"
+	list_flush_ipv6_exception	ipv6: list and flush cached exceptions	1
+	pmtu_ipv4_route_change		ipv4: PMTU exception w/route replace	1
+	pmtu_ipv6_route_change		ipv6: PMTU exception w/route replace	1"
 
 NS_A="ns-A"
 NS_B="ns-B"
@@ -569,7 +579,6 @@ setup_routing() {
 setup() {
 	[ "$(id -u)" -ne 0 ] && echo "  need to run as root" && return $ksft_skip
 
-	cleanup
 	for arg do
 		eval setup_${arg} || { echo "  ${arg} not supported"; return 1; }
 	done
@@ -580,7 +589,7 @@ trace() {
 
 	for arg do
 		[ "${ns_cmd}" = "" ] && ns_cmd="${arg}" && continue
-		${ns_cmd} tcpdump -s 0 -i "${arg}" -w "${name}_${arg}.pcap" 2> /dev/null &
+		${ns_cmd} tcpdump --immediate-mode -s 0 -i "${arg}" -w "${name}_${arg}.pcap" 2> /dev/null &
 		tcpdump_pids="${tcpdump_pids} $!"
 		ns_cmd=
 	done
@@ -1120,6 +1129,13 @@ check_command() {
 	return 0
 }
 
+check_running() {
+	pid=${1}
+	cmd=${2}
+
+	[ "$(cat /proc/${pid}/cmdline 2>/dev/null | tr -d '\0')" = "${cmd}" ]
+}
+
 test_cleanup_vxlanX_exception() {
 	outer="${1}"
 	encap="vxlan"
@@ -1150,11 +1166,12 @@ test_cleanup_vxlanX_exception() {
 
 	${ns_a} ip link del dev veth_A-R1 &
 	iplink_pid=$!
-	sleep 1
-	if [ "$(cat /proc/${iplink_pid}/cmdline 2>/dev/null | tr -d '\0')" = "iplinkdeldevveth_A-R1" ]; then
-		err "  can't delete veth device in a timely manner, PMTU dst likely leaked"
-		return 1
-	fi
+	for i in $(seq 1 20); do
+		check_running ${iplink_pid} "iplinkdeldevveth_A-R1" || return 0
+		sleep 0.1
+	done
+	err "  can't delete veth device in a timely manner, PMTU dst likely leaked"
+	return 1
 }
 
 test_cleanup_ipv6_exception() {
@@ -1171,6 +1188,10 @@ run_test() {
 	tdesc="$2"
 
 	unset IFS
+
+	# Since cleanup() relies on variables modified by this subshell, it
+	# has to run in this context.
+	trap cleanup EXIT
 
 	if [ "$VERBOSE" = "1" ]; then
 		printf "\n##########################################################################\n\n"
@@ -1249,8 +1270,7 @@ test_list_flush_ipv4_exception() {
 	done
 	run_cmd ${ns_a} ping -q -M want -i 0.1 -c 2 -s 1800 "${dst2}"
 
-	# Each exception is printed as two lines
-	if [ "$(${ns_a} ip route list cache | wc -l)" -ne 202 ]; then
+	if [ "$(${ns_a} ip -oneline route list cache | wc -l)" -ne 101 ]; then
 		err "  can't list cached exceptions"
 		fail=1
 	fi
@@ -1300,7 +1320,7 @@ test_list_flush_ipv6_exception() {
 		run_cmd ${ns_a} ping -q -M want -i 0.1 -w 1 -s 1800 "${dst_prefix1}${i}"
 	done
 	run_cmd ${ns_a} ping -q -M want -i 0.1 -w 1 -s 1800 "${dst2}"
-	if [ "$(${ns_a} ip -6 route list cache | wc -l)" -ne 101 ]; then
+	if [ "$(${ns_a} ip -oneline -6 route list cache | wc -l)" -ne 101 ]; then
 		err "  can't list cached exceptions"
 		fail=1
 	fi
@@ -1315,6 +1335,63 @@ test_list_flush_ipv6_exception() {
 	fi
 
 	return ${fail}
+}
+
+test_pmtu_ipvX_route_change() {
+	family=${1}
+
+	setup namespaces routing || return 2
+	trace "${ns_a}"  veth_A-R1    "${ns_r1}" veth_R1-A \
+	      "${ns_r1}" veth_R1-B    "${ns_b}"  veth_B-R1 \
+	      "${ns_a}"  veth_A-R2    "${ns_r2}" veth_R2-A \
+	      "${ns_r2}" veth_R2-B    "${ns_b}"  veth_B-R2
+
+	if [ ${family} -eq 4 ]; then
+		ping=ping
+		dst1="${prefix4}.${b_r1}.1"
+		dst2="${prefix4}.${b_r2}.1"
+		gw="${prefix4}.${a_r1}.2"
+	else
+		ping=${ping6}
+		dst1="${prefix6}:${b_r1}::1"
+		dst2="${prefix6}:${b_r2}::1"
+		gw="${prefix6}:${a_r1}::2"
+	fi
+
+	# Set up initial MTU values
+	mtu "${ns_a}"  veth_A-R1 2000
+	mtu "${ns_r1}" veth_R1-A 2000
+	mtu "${ns_r1}" veth_R1-B 1400
+	mtu "${ns_b}"  veth_B-R1 1400
+
+	mtu "${ns_a}"  veth_A-R2 2000
+	mtu "${ns_r2}" veth_R2-A 2000
+	mtu "${ns_r2}" veth_R2-B 1500
+	mtu "${ns_b}"  veth_B-R2 1500
+
+	# Create route exceptions
+	run_cmd ${ns_a} ${ping} -q -M want -i 0.1 -w 1 -s 1800 ${dst1}
+	run_cmd ${ns_a} ${ping} -q -M want -i 0.1 -w 1 -s 1800 ${dst2}
+
+	# Check that exceptions have been created with the correct PMTU
+	pmtu_1="$(route_get_dst_pmtu_from_exception "${ns_a}" ${dst1})"
+	check_pmtu_value "1400" "${pmtu_1}" "exceeding MTU" || return 1
+	pmtu_2="$(route_get_dst_pmtu_from_exception "${ns_a}" ${dst2})"
+	check_pmtu_value "1500" "${pmtu_2}" "exceeding MTU" || return 1
+
+	# Replace the route from A to R1
+	run_cmd ${ns_a} ip route change default via ${gw}
+
+	# Delete the device in A
+	run_cmd ${ns_a} ip link del "veth_A-R1"
+}
+
+test_pmtu_ipv4_route_change() {
+	test_pmtu_ipvX_route_change 4
+}
+
+test_pmtu_ipv6_route_change() {
+	test_pmtu_ipvX_route_change 6
 }
 
 usage() {
