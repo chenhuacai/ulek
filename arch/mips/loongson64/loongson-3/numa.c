@@ -72,11 +72,11 @@ static int __init compute_node_distance(int row, int col)
 				loongson_sysconf.cores_per_package;
 
 	if (col == row)
-		return 0;
+		return 6;
 	else if (package_row == package_col)
 		return 40;
 	else
-		return 100;
+		return 200;
 }
 
 static void __init init_topology_matrix(void)
