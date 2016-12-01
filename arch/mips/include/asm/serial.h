@@ -12,6 +12,7 @@
  */
 #define BASE_BAUD 0
 #else
+#define STD_COM_FLAGS (UPF_BOOT_AUTOCONF | UPF_SKIP_TEST)
 #include <asm-generic/serial.h>
 #endif
 
