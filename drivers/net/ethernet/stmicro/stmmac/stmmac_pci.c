@@ -178,6 +178,7 @@ static int intel_mgbe_common_data(struct pci_dev *pdev,
 
 	plat->ptp_max_adj = plat->clk_ptp_rate;
 
+#ifdef CONFIG_COMMON_CLK
 	/* Set system clock */
 	plat->stmmac_clk = clk_register_fixed_rate(&pdev->dev,
 						   "stmmac-clk", NULL, 0,
@@ -187,6 +188,9 @@ static int intel_mgbe_common_data(struct pci_dev *pdev,
 		dev_warn(&pdev->dev, "Fail to register stmmac-clk\n");
 		plat->stmmac_clk = NULL;
 	}
+#else
+	plat->stmmac_clk = NULL;
+#endif
 	clk_prepare_enable(plat->stmmac_clk);
 
 	/* Set default value for multicast hash bins */
@@ -445,6 +449,27 @@ static const struct stmmac_pci_info snps_gmac5_pci_info = {
 	.setup = snps_gmac5_default_data,
 };
 
+static int loongson_default_data(struct pci_dev *pdev,
+				struct plat_stmmacenet_data *plat)
+{
+	/* Set common default data first */
+	common_default_data(plat);
+
+	plat->bus_id = PCI_DEVID(pdev->bus->number, pdev->devfn);
+	plat->phy_addr = -1;
+	plat->interface = PHY_INTERFACE_MODE_GMII;
+
+	plat->dma_cfg->pbl = 32;
+	plat->dma_cfg->pblx8 = true;
+	/* AXI (TODO) */
+
+	return 0;
+}
+
+static struct stmmac_pci_info loongson_pci_info = {
+	.setup = loongson_default_data,
+};
+
 /**
  * stmmac_pci_probe
  *
@@ -511,6 +536,8 @@ static int stmmac_pci_probe(struct pci_dev *pdev,
 	res.addr = pcim_iomap_table(pdev)[i];
 	res.wol_irq = pdev->irq;
 	res.irq = pdev->irq;
+	if (pdev->vendor == PCI_VENDOR_ID_LOONGSON)
+		res.lpi_irq = pdev->irq + 1;
 
 	return stmmac_dvr_probe(&pdev->dev, plat, &res);
 }
@@ -530,8 +557,10 @@ static void stmmac_pci_remove(struct pci_dev *pdev)
 
 	stmmac_dvr_remove(&pdev->dev);
 
+#ifdef CONFIG_COMMON_CLK
 	if (priv->plat->stmmac_clk)
 		clk_unregister_fixed_rate(priv->plat->stmmac_clk);
+#endif
 
 	for (i = 0; i <= PCI_STD_RESOURCE_END; i++) {
 		if (pci_resource_len(pdev, i) == 0)
@@ -601,6 +630,7 @@ static const struct pci_device_id stmmac_id_table[] = {
 	STMMAC_DEVICE(INTEL, STMMAC_EHL_SGMII1G_ID, ehl_sgmii1g_pci_info),
 	STMMAC_DEVICE(INTEL, STMMAC_TGL_SGMII1G_ID, tgl_sgmii1g_pci_info),
 	STMMAC_DEVICE(SYNOPSYS, STMMAC_GMAC5_ID, snps_gmac5_pci_info),
+	STMMAC_DEVICE(LOONGSON, PCI_DEVICE_ID_LOONGSON_GMAC, loongson_pci_info),
 	{}
 };
 
