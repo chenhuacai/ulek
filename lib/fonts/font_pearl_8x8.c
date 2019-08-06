@@ -2583,5 +2583,8 @@ const struct font_desc font_pearl_8x8 = {
 	.width	= 8,
 	.height	= 8,
 	.data	= fontdata_pearl8x8.data,
+#ifdef FONT_CHARCOUNT
+	.count  = 256,
+#endif
 	.pref	= 2,
 };

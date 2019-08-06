@@ -1002,7 +1002,7 @@ static const char *fbcon_startup(void)
 		vc->vc_font.width = font->width;
 		vc->vc_font.height = font->height;
 		vc->vc_font.data = (void *)(p->fontdata = font->data);
-		vc->vc_font.charcount = 256; /* FIXME  Need to support more fonts */
+		vc->vc_font.charcount = font->count;
 	} else {
 		p->fontdata = vc->vc_font.data;
 	}
@@ -1066,6 +1066,7 @@ static void fbcon_init(struct vc_data *vc, int init)
 						    fvc->vc_font.data);
 			vc->vc_font.width = fvc->vc_font.width;
 			vc->vc_font.height = fvc->vc_font.height;
+			vc->vc_font.charcount = fvc->vc_font.charcount;
 			p->userfont = t->userfont;
 
 			if (p->userfont)
@@ -1081,8 +1082,7 @@ static void fbcon_init(struct vc_data *vc, int init)
 			vc->vc_font.width = font->width;
 			vc->vc_font.height = font->height;
 			vc->vc_font.data = (void *)(p->fontdata = font->data);
-			vc->vc_font.charcount = 256; /* FIXME  Need to
-							support more fonts */
+			vc->vc_font.charcount = font->count;
 		}
 	}
 
@@ -1308,10 +1308,7 @@ static void fbcon_putcs(struct vc_data *vc, const unsigned short *s,
 
 static void fbcon_putc(struct vc_data *vc, int c, int ypos, int xpos)
 {
-	unsigned short chr;
-
-	scr_writew(c, &chr);
-	fbcon_putcs(vc, &chr, 1, ypos, xpos);
+	fbcon_putcs(vc, (unsigned short *)&c, 1, ypos, xpos);
 }
 
 static void fbcon_clear_margins(struct vc_data *vc, int bottom_only)
@@ -1617,6 +1614,7 @@ static void fbcon_redraw_blit(struct vc_data *vc, struct fb_info *info,
 			}
 
 			scr_writew(c, d);
+			scr_writew(scr_readw(s + (vc->vc_screenbuf_size >> 1)), d + (vc->vc_screenbuf_size >> 1));
 			console_conditional_schedule();
 			s++;
 			d++;
@@ -1639,6 +1637,7 @@ static void fbcon_redraw_blit(struct vc_data *vc, struct fb_info *info,
 static void fbcon_redraw(struct vc_data *vc, struct fbcon_display *p,
 			 int line, int count, int offset)
 {
+	u16 charmask = vc->vc_hi_font_mask ? 0x1ff : 0xff;
 	unsigned short *d = (unsigned short *)
 	    (vc->vc_origin + vc->vc_size_row * line);
 	unsigned short *s = d + offset;
@@ -1661,18 +1660,22 @@ static void fbcon_redraw(struct vc_data *vc, struct fbcon_display *p,
 					start = s;
 				}
 			}
-			if (c == scr_readw(d)) {
-				if (s > start) {
-					fbcon_putcs(vc, start, s - start,
-						     line, x);
-					x += s - start + 1;
-					start = s + 1;
-				} else {
-					x++;
-					start++;
+			if( ((scr_readw(s) & charmask) == 0xff || (scr_readw(s) & charmask) == 0xfe) && scr_readw(s + (vc->vc_screenbuf_size >> 1)) != 0){
+			}else{
+				if (c == scr_readw(d)) {
+					if (s > start) {
+						fbcon_putcs(vc, start, s - start,
+							     line, x);
+						x += s - start + 1;
+						start = s + 1;
+					} else {
+						x++;
+						start++;
+					}
 				}
 			}
 			scr_writew(c, d);
+			scr_writew(scr_readw(s + (vc->vc_screenbuf_size >> 1)), d + (vc->vc_screenbuf_size >> 1));
 			console_conditional_schedule();
 			s++;
 			d++;
@@ -2291,7 +2294,7 @@ static int fbcon_get_font(struct vc_data *vc, struct console_font *font)
 
 	font->width = vc->vc_font.width;
 	font->height = vc->vc_font.height;
-	font->charcount = vc->vc_hi_font_mask ? 512 : 256;
+	font->charcount = vc->vc_font.charcount;
 	if (!font->data)
 		return 0;
 
@@ -2429,6 +2432,7 @@ static int fbcon_do_set_font(struct vc_data *vc, int w, int h,
 		REFCOUNT(data)++;
 	vc->vc_font.width = w;
 	vc->vc_font.height = h;
+	vc->vc_font.charcount = cnt;
 	if (vc->vc_hi_font_mask && cnt == 256)
 		set_vc_hi_font(vc, false);
 	else if (!vc->vc_hi_font_mask && cnt == 512)
@@ -2486,11 +2490,6 @@ static int fbcon_set_font(struct vc_data *vc, struct console_font *font,
 	int i, csum;
 	u8 *new_data, *data = font->data;
 	int pitch = PITCH(font->width);
-
-	/* Is there a reason why fbconsole couldn't handle any charcount >256?
-	 * If not this check should be changed to charcount < 256 */
-	if (charcount != 256 && charcount != 512)
-		return -EINVAL;
 
 	/* font bigger than screen resolution ? */
 	if (w > FBCON_SWAP(info->var.rotate, info->var.xres, info->var.yres) ||
@@ -2608,6 +2607,10 @@ static void fbcon_set_palette(struct vc_data *vc, const unsigned char *table)
 
 static u16 *fbcon_screen_pos(struct vc_data *vc, int offset)
 {
+	if (offset < 0) {
+		offset = -offset - 1;
+		return (u16 *)(vc->vc_origin + offset + (vc->vc_screenbuf_size));
+	}
 	return (u16 *) (vc->vc_origin + offset);
 }
 

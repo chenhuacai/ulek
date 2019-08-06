@@ -4114,5 +4114,8 @@ const struct font_desc font_7x14 = {
 	.width	= 7,
 	.height	= 14,
 	.data	= fontdata_7x14.data,
+#ifdef FONT_CHARCOUNT
+	.count  = 256,
+#endif
 	.pref	= 0,
 };
