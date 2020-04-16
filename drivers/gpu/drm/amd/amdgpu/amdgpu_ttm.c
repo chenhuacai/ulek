@@ -1925,7 +1925,7 @@ static int amdgpu_map_buffer(struct ttm_buffer_object *bo,
 	while (num_dw & 0x7)
 		num_dw++;
 
-	num_bytes = num_pages * 8;
+	num_bytes = num_pages * 8 * AMDGPU_GPU_PAGES_IN_CPU_PAGE;
 
 	r = amdgpu_job_alloc_with_ib(adev, num_dw * 4 + num_bytes, &job);
 	if (r)
