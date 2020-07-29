@@ -1987,6 +1987,9 @@ static inline void cpu_probe_loongson(struct cpuinfo_mips *c, unsigned int cpu)
 		panic("Unknown Loongson Processor ID!");
 		break;
 	}
+
+	/* All Loongson processors covered here define ExcCode 16 as GSExc. */
+	c->options |= MIPS_CPU_GSEXCEX;
 }
 
 static inline void cpu_probe_ingenic(struct cpuinfo_mips *c, unsigned int cpu)

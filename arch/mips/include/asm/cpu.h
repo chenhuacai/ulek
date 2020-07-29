@@ -417,6 +417,7 @@ enum cpu_type_enum {
 #define MIPS_CPU_MMID		BIT_ULL(57)	/* CPU supports MemoryMapIDs */
 #define MIPS_CPU_CONST_TIMER	BIT_ULL(58)	/* CPU has constant timer */
 #define MIPS_CPU_FTLBPAREX	BIT_ULL(59)	/* CPU has FTLB parity exception */
+#define MIPS_CPU_GSEXCEX	BIT_ULL(60)	/* CPU has GSExc exception */
 
 /*
  * CPU ASE encodings
