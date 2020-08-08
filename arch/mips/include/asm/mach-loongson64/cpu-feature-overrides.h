@@ -26,7 +26,9 @@
 #define cpu_has_counter		1
 #define cpu_has_dc_aliases	(PAGE_SIZE < 0x4000)
 #define cpu_has_divec		0
+#ifndef CONFIG_CPU_LOONGSON3 
 #define cpu_has_ejtag		0
+#endif
 #define cpu_has_inclusive_pcaches	1
 #define cpu_has_llsc		1
 #define cpu_has_mcheck		0
@@ -42,7 +44,9 @@
 #define cpu_has_veic		0
 #define cpu_has_vint		0
 #define cpu_has_vtag_icache	0
+#ifndef CONFIG_CPU_LOONGSON3 
 #define cpu_has_watch		1
+#endif
 #define cpu_has_perf_cntr_intr_bit	0
 
 #ifdef CONFIG_CPU_LOONGSON3
