@@ -77,7 +77,7 @@ static int wpce_set_fan_level(u8 level)
 	if (level > MAX_FAN_LEVEL)
 		level = MAX_FAN_LEVEL;
 
-	ec_write(INDEX_FAN_SPEED_LEVEL, level);
+	wpce775l_ec_write(INDEX_FAN_SPEED_LEVEL, level);
 	return 0;
 }
 
@@ -86,7 +86,7 @@ static ssize_t get_fan_level(struct device *dev,
 {
 	u8 val;
 
-	val = ec_read(INDEX_FAN_SPEED_LEVEL);
+	val = wpce775l_ec_read(INDEX_FAN_SPEED_LEVEL);
 	return sprintf(buf, "%d\n", val);
 }
 
@@ -107,8 +107,8 @@ static ssize_t get_fan_speed(struct device *dev,
 {
 	u32 val;
 
-	val = (ec_read(INDEX_FAN_SPEED_HIGH) << 8) +
-			ec_read(INDEX_FAN_SPEED_LOW);
+	val = (wpce775l_ec_read(INDEX_FAN_SPEED_HIGH) << 8) +
+			wpce775l_ec_read(INDEX_FAN_SPEED_LOW);
 	return sprintf(buf, "%d\n", val);
 }
 
@@ -118,7 +118,7 @@ static void notify_temp(struct work_struct *work)
 
 	temp =  fan_policy.depend_temp(0) / 1000;
 
-	ec_write_noindex(0x4d, temp);
+	wpce775l_ec_write_noindex(0x4d, temp);
 
 	queue_delayed_work(notify_workqueue, &notify_work,
 				fan_policy.adjust_period * HZ);
@@ -134,13 +134,13 @@ static int notify_temp_to_EC(void)
 
 static int kernel_control_fan(void)
 {
-	ec_write(INDEX_FAN_CTRLMOD,FAN_CTRL_BYHOST);
+	wpce775l_ec_write(INDEX_FAN_CTRLMOD,FAN_CTRL_BYHOST);
 	return 0;
 }
 
 static int ec_control_fan(void)
 {
-	ec_write(INDEX_FAN_CTRLMOD,FAN_CTRL_BYEC);
+	wpce775l_ec_write(INDEX_FAN_CTRLMOD,FAN_CTRL_BYEC);
 	return 0;
 }
 

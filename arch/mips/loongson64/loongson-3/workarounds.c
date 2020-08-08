@@ -23,7 +23,7 @@ static void gpio_lvds_on(void)
 void turn_off_lvds(void)
 {
 	if (loongson_sysconf.workarounds & WORKAROUND_LVDS_EC)
-		ec_write(INDEX_BACKLIGHT_STSCTRL, BACKLIGHT_OFF);
+		wpce775l_ec_write(INDEX_BACKLIGHT_STSCTRL, BACKLIGHT_OFF);
 	if (loongson_sysconf.workarounds & WORKAROUND_LVDS_GPIO)
 		gpio_lvds_off();
 }
@@ -31,7 +31,7 @@ void turn_off_lvds(void)
 void turn_on_lvds(void)
 {
 	if (loongson_sysconf.workarounds & WORKAROUND_LVDS_EC)
-		ec_write(INDEX_BACKLIGHT_STSCTRL, BACKLIGHT_ON);
+		wpce775l_ec_write(INDEX_BACKLIGHT_STSCTRL, BACKLIGHT_ON);
 	if (loongson_sysconf.workarounds & WORKAROUND_LVDS_GPIO)
 		gpio_lvds_on();
 }

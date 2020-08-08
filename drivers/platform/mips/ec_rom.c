@@ -74,10 +74,10 @@ static int misc_ioctl(struct inode * inode, struct file *filp, u_int cmd, u_long
 
 			if (ecreg->flag == 0) {
 				/* has index read ACPI command */
-				ecreg->val = (unsigned short)ec_read_all((unsigned char)ecreg->addr, ecreg->index);
+				ecreg->val = (unsigned short)wpce775l_ec_read_all((unsigned char)ecreg->addr, ecreg->index);
 			} else if (ecreg->flag == 1) {
 				/* no index read ACPI command */
-				ecreg->val = (unsigned short)ec_read_noindex((unsigned char)ecreg->addr);
+				ecreg->val = (unsigned short)wpce775l_ec_read_noindex((unsigned char)ecreg->addr);
 			}
 			ret = copy_to_user(ptr, ecreg, sizeof(struct ec_reg));
 			if (ret) {
@@ -94,10 +94,10 @@ static int misc_ioctl(struct inode * inode, struct file *filp, u_int cmd, u_long
 
 			if (ecreg->flag == 1) {
 				/* write no index command */
-				ec_write_noindex((unsigned char)ecreg->addr, (unsigned char)ecreg->val);
+				wpce775l_ec_write_noindex((unsigned char)ecreg->addr, (unsigned char)ecreg->val);
 			} else {
 				/* write has index command */
-				ec_write_all((unsigned char)ecreg->addr, (unsigned char)ecreg->index, (unsigned char)ecreg->val);
+				wpce775l_ec_write_all((unsigned char)ecreg->addr, (unsigned char)ecreg->index, (unsigned char)ecreg->val);
 			}
 			break;
 

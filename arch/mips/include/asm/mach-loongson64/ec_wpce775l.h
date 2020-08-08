@@ -381,19 +381,15 @@ extern unsigned char app_access_ec_flag;
 typedef int (*sci_handler)(int status);
 
 /* The general ec index-io port read action */
-extern unsigned char ec_read(unsigned char index);
-extern unsigned char ec_read_all(unsigned char command, unsigned char index);
-extern unsigned char ec_read_noindex(unsigned char command);
-
+extern unsigned char wpce775l_ec_read(unsigned char index);
+extern unsigned char wpce775l_ec_read_all(unsigned char command, unsigned char index);
+extern unsigned char wpce775l_ec_read_noindex(unsigned char command);
 /* The general ec index-io port write action */
-extern int ec_write(unsigned char index, unsigned char data);
-extern int ec_write_all(unsigned char command, unsigned char index, unsigned char data);
-extern int ec_write_noindex(unsigned char command, unsigned char data);
-
+extern int wpce775l_ec_write(unsigned char index, unsigned char data);
+extern int wpce775l_ec_write_all(unsigned char command, unsigned char index, unsigned char data);
+extern int wpce775l_ec_write_noindex(unsigned char command, unsigned char data);
 /* Query sequence of 62/66 port access routine. */
-extern int ec_query_seq(unsigned char command);
-extern int ec_get_event_num(void);
-
-extern void clean_ec_event_status(void);
-
+extern int wpce775l_ec_query_seq(unsigned char command);
+extern int wpce775l_ec_get_event_num(void);
+extern void wpce775l_clean_ec_event_status(void);
 #endif /* __EC_WPCE775L_H__ */
