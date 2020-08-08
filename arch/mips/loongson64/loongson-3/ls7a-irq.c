@@ -67,7 +67,7 @@ static struct irq_chip pch_irq_chip = {
 	.irq_mask		= mask_pch_irq,
 	.irq_unmask		= unmask_pch_irq,
 	.irq_set_affinity	= plat_set_irq_affinity,
-	.flags			= IRQCHIP_MASK_ON_SUSPEND,
+	.flags			= IRQCHIP_MASK_ON_SUSPEND | IRQCHIP_SKIP_SET_WAKE,
 };
 
 #define LPC_OFFSET 19

@@ -144,7 +144,8 @@ typedef u64 acpi_physical_address;
  * Note: EM64T and other X86-64 processors support misaligned transfers,
  * so there is no need to define this flag.
  */
-#if defined (__IA64__) || defined (__ia64__)
+
+#if defined (__IA64__) || defined (__ia64__) || defined (CONFIG_CPU_LOONGSON3)
 #define ACPI_MISALIGNMENT_NOT_SUPPORTED
 #endif
 

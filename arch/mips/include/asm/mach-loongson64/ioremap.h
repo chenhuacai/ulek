@@ -11,6 +11,9 @@
 
 #include <linux/types.h>
 
+#define NR_FIX_BTMAPS 64
+extern unsigned long max_low_pfn_mapped;
+
 /*
  * Allow physical addresses to be fixed up to help peripherals located
  * outside the low 32-bit range -- generic pass-through version.

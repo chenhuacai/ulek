@@ -5,7 +5,6 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 
-static struct kobject *efi_kobj;
 struct proc_dir_entry *proc_efi;
 extern unsigned int has_systab;
 extern unsigned long systab_addr;
@@ -61,9 +60,6 @@ static const struct file_operations proc_systab_operations = {
   */
 int __init efi_init_kernfs(void)
 {
-	efi_kobj = kobject_create_and_add("efi", firmware_kobj);
-	if (!efi_kobj)
-		return -ENOMEM;
 
 	proc_efi = proc_mkdir("efi", NULL);
 	if (!proc_efi)
@@ -82,7 +78,6 @@ void __exit efi_exit_kernfs(void)
 {
 	remove_proc_entry("systab", proc_efi);
 	remove_proc_entry("efi", NULL);
-	kobject_put(efi_kobj);
 }
 
 static int __init init_efi(void)

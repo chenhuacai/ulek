@@ -16,6 +16,7 @@
 #include <loongson-pch.h>
 #include <loongson_hwmon.h>
 #include <workarounds.h>
+#include <linux/acpi.h>
 
 /*
  * Kernel helper policy
@@ -77,6 +78,11 @@ struct loongson_fan_policy constant_speed_policy = {
 #define GPIO_LCD_CNTL		5
 #define GPIO_BACKLIGHIT_CNTL	7
 
+static struct platform_device loongson_laptop_device = {
+	.name			= "loongson-laptop",
+	.id   			= 4,
+};
+
 static int __init loongson3_platform_init(void)
 {
 	int i;
@@ -106,12 +112,30 @@ static int __init loongson3_platform_init(void)
 		gpio_request(GPIO_BACKLIGHIT_CNTL, "gpio_bl_cntl");
 	}
 
+	platform_device_register(&loongson_laptop_device);
+
 	return 0;
+}
+
+static void get_suspend_addr(void)
+{
+	acpi_status status;
+	unsigned long long suspend_addr = 0;
+
+	status = acpi_evaluate_integer(NULL, "\\SADR", NULL, &suspend_addr);
+	if (ACPI_FAILURE(status) || !suspend_addr) {
+		pr_err("ACPI S3 is not support!\n");
+		return;
+	}
+	loongson_sysconf.suspend_addr = suspend_addr;
 }
 
 static int __init loongson3_device_init(void)
 {
 	loongson_pch->pch_device_initcall();
+
+	if (!acpi_disabled)
+		get_suspend_addr();
 
 	return 0;
 }

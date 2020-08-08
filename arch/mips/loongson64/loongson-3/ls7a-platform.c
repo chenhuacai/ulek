@@ -21,6 +21,7 @@
 #include <linux/platform_device.h>
 
 #include <linux/i2c.h>
+#include <linux/acpi.h>
 #include <linux/platform_data/i2c-gpio.h>
 
 u32 node_id_offset;
@@ -63,6 +64,14 @@ static void __init ls7a_arch_initcall(void)
 	pci_io_resource.end    = 0x3ffff;
 	ioport_resource.end    = 0xfffff;
 	ls7a_pci_controller.io_map_base = mips_io_port_base;
+#ifdef CONFIG_ACPI
+	if(!acpi_pci_disabled) {
+		acpi_controller = &ls7a_pci_controller;
+		acpi_mem_resource = &pci_mem_resource;
+		acpi_io_resource = &pci_io_resource;
+		return;
+	}
+#endif
 	register_pci_controller(&ls7a_pci_controller);
 }
 

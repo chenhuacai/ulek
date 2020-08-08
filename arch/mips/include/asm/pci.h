@@ -46,6 +46,9 @@ struct pci_controller {
 	   and XFree86. Eventually will be removed. */
 	unsigned int need_domain_info;
 #endif
+#ifdef CONFIG_ACPI
+	struct acpi_device *companion;
+#endif
 
 	/* Optional access methods for reading/writing the bus number
 	   of the PCI controller */
@@ -119,6 +122,10 @@ extern unsigned long PCIBIOS_MIN_MEM;
 #include <linux/scatterlist.h>
 #include <linux/string.h>
 #include <asm/io.h>
+
+extern struct resource *acpi_io_resource;
+extern struct resource *acpi_mem_resource;
+extern struct pci_controller *acpi_controller;
 
 #ifdef CONFIG_PCI_DOMAINS_GENERIC
 static inline int pci_proc_domain(struct pci_bus *bus)

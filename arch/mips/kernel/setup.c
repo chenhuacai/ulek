@@ -71,6 +71,7 @@ unsigned long mips_machtype __read_mostly = MACH_UNKNOWN;
 
 EXPORT_SYMBOL(mips_machtype);
 
+static char **command_line_p;
 static char __initdata command_line[COMMAND_LINE_SIZE];
 char __initdata arcs_cmdline[COMMAND_LINE_SIZE];
 
@@ -626,25 +627,8 @@ static void reserve_oldmem_region(int node, unsigned long s0, unsigned long e0)
  * breaking plat_setup was just renamed to plat_mem_setup and a second platform
  * initialization hook for anything else was introduced.
  */
-static void __init arch_mem_init(char **cmdline_p)
+void __init parse_cmdline(void)
 {
-	unsigned int node;
-	unsigned long start_pfn, end_pfn;
-	extern void plat_mem_setup(void);
-
-	/*
-	 * Initialize boot_command_line to an innocuous but non-empty string in
-	 * order to prevent early_init_dt_scan_chosen() from copying
-	 * CONFIG_CMDLINE into it without our knowledge. We handle
-	 * CONFIG_CMDLINE ourselves below & don't want to duplicate its
-	 * content because repeating arguments can be problematic.
-	 */
-	strlcpy(boot_command_line, " ", COMMAND_LINE_SIZE);
-
-	/* call board setup routine */
-	plat_mem_setup();
-	memblock_set_bottom_up(true);
-
 #if defined(CONFIG_CMDLINE_BOOL) && defined(CONFIG_CMDLINE_OVERRIDE)
 	strlcpy(boot_command_line, builtin_cmdline, COMMAND_LINE_SIZE);
 #else
@@ -674,13 +658,31 @@ static void __init arch_mem_init(char **cmdline_p)
 #endif
 	strlcpy(command_line, boot_command_line, COMMAND_LINE_SIZE);
 
-	*cmdline_p = command_line;
+	*command_line_p = command_line;
 
 	parse_early_param();
 
 	if (usermem)
 		pr_info("User-defined physical RAM map overwrite\n");
 
+#ifdef CONFIG_ACPI
+	init_initrd();
+#endif
+}
+
+static void __init arch_mem_init(void)
+{
+	unsigned int node;
+	unsigned long start_pfn, end_pfn;
+	extern void plat_mem_setup(void);
+
+	/* call board setup routine */
+	plat_mem_setup();
+	memblock_set_bottom_up(true);
+
+#ifndef CONFIG_ACPI
+	parse_cmdline();
+#endif
 	check_kernel_sections_mem();
 
 	early_init_fdt_reserve_self();
@@ -809,10 +811,22 @@ static void __init prefill_possible_map(void)
 static inline void prefill_possible_map(void) {}
 #endif
 
+extern void plat_early_init(void);
+
 void __init setup_arch(char **cmdline_p)
 {
 	cpu_probe();
 	mips_cm_probe();
+
+	/*
+	 * Initialize boot_command_line to an innocuous but non-empty string in
+	 * order to prevent early_init_dt_scan_chosen() from copying
+	 * CONFIG_CMDLINE into it without our knowledge. We handle
+	 * CONFIG_CMDLINE ourselves below & don't want to duplicate its
+	 * content because repeating arguments can be problematic.
+	 */
+	strlcpy(boot_command_line, " ", COMMAND_LINE_SIZE);
+	command_line_p = cmdline_p;
 	prom_init();
 
 	setup_early_fdc_console();
@@ -830,9 +844,10 @@ void __init setup_arch(char **cmdline_p)
 #endif
 #endif
 
-	arch_mem_init(cmdline_p);
+	arch_mem_init();
+#ifndef CONFIG_ACPI
 	dmi_setup();
-
+#endif
 	resource_init();
 	plat_smp_setup();
 	prefill_possible_map();

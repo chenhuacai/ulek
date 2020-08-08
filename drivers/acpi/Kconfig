@@ -192,7 +192,7 @@ config ACPI_BUTTON
 
 config ACPI_VIDEO
 	tristate "Video"
-	depends on X86 && BACKLIGHT_CLASS_DEVICE
+	depends on (X86 || MIPS) && BACKLIGHT_CLASS_DEVICE
 	depends on INPUT
 	select THERMAL
 	help
@@ -265,9 +265,9 @@ config ACPI_CPPC_LIB
 
 config ACPI_PROCESSOR
 	tristate "Processor"
-	depends on X86 || IA64 || ARM64
+	depends on X86 || IA64 || ARM64 || MIPS
 	select ACPI_PROCESSOR_IDLE
-	select ACPI_CPU_FREQ_PSS if X86 || IA64
+	select ACPI_CPU_FREQ_PSS if X86 || IA64 || MIPS
 	default y
 	help
 	  This driver adds support for the ACPI Processor package. It is required
@@ -322,7 +322,7 @@ config ACPI_THERMAL
 config ACPI_NUMA
 	bool "NUMA support"
 	depends on NUMA
-	depends on (X86 || IA64 || ARM64)
+	depends on (X86 || IA64 || ARM64 || MIPS)
 	default y if IA64 || ARM64
 
 config ACPI_CUSTOM_DSDT_FILE

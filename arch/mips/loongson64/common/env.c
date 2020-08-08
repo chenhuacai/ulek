@@ -14,18 +14,22 @@
  * Author: Wu Zhangjin, wuzhangjin@gmail.com
  */
 #include <linux/export.h>
+#include <linux/acpi.h>
 #include <asm/time.h>
 #include <asm/bootinfo.h>
 #include <asm/dma-coherence.h>
-#include <loongson.h>
 #include <boot_param.h>
+#include <loongson.h>
 #include <loongson-pch.h>
+#include <pci.h>
 #include <workarounds.h>
 
 u32 cpu_clock_freq;
 EXPORT_SYMBOL(cpu_clock_freq);
+bool acpiboot;
 char cpu_full_name[64];
 struct efi_memory_map_loongson *loongson_memmap;
+struct loongsonlist_mem_map *loongsonlist_memmap;
 struct loongson_system_configuration loongson_sysconf;
 
 u64 loongson_chipcfg[MAX_PACKAGES] = {0xffffffffbfc00180};
@@ -35,6 +39,7 @@ u64 loongson_freqctrl[MAX_PACKAGES];
 unsigned long long smp_group[4];
 unsigned int has_systab = 0;
 unsigned long systab_addr;
+struct bootparamsinterface *efi_bp;
 
 void *loongson_fdt_blob;
 struct platform_controller_hub dummy_pch;
@@ -49,10 +54,9 @@ do {									\
 		tmp = kstrtou32((char *)p + strlen(option"="), 10, &res); \
 } while (0)
 
-void __init prom_init_env(void)
+void __init prom_init_env_noacpi(void)
 {
 	/* pmon passes arguments in 32bit pointers */
-	char freq[12];
 	unsigned int processor_id;
 
 #ifndef CONFIG_LEFI_FIRMWARE_INTERFACE
@@ -259,9 +263,120 @@ void __init prom_init_env(void)
 	}
 	mips_cpu_frequency = cpu_clock_freq;
 	pr_info("CpuClock = %u\n", cpu_clock_freq);
+}
 
-	/* Append default cpu frequency with round-off */
-	sprintf(freq, " @ %uMHz", (cpu_clock_freq + 500000) / 1000000);
-	strncat(cpu_full_name, freq, sizeof(cpu_full_name));
-	__cpu_full_name[0] = cpu_full_name;
+u8 ext_listhdr_checksum(u8 *buffer, u32 length)
+{
+	u8 sum = 0;
+	u8 *end = buffer + length;
+
+	while (buffer < end) {
+		sum = (u8)(sum + *(buffer++));
+	}
+
+	return (sum);
+}
+int parse_mem(struct _extention_list_hdr *head)
+{
+	loongsonlist_memmap = (struct loongsonlist_mem_map *)head;
+
+	if (ext_listhdr_checksum((u8 *)loongsonlist_memmap, head->length))
+		return -EPERM;
+
+	return 0;
+}
+
+
+int parse_vbios(struct _extention_list_hdr *head)
+{
+	struct loongsonlist_vbios *pvbios = (struct loongsonlist_vbios *)head;
+
+	if (ext_listhdr_checksum((u8 *)pvbios, head->length))
+		return -EPERM;
+
+	loongson_sysconf.vgabios_addr = (u64)pvbios;
+
+	return 0;
+}
+
+static int parse_screeninfo(struct _extention_list_hdr *head)
+{
+	struct loongsonlist_screeninfo *pscreeninfo;
+
+	pscreeninfo = (struct loongsonlist_screeninfo *)head;
+	if (ext_listhdr_checksum((u8 *)pscreeninfo, head->length)) {
+		return -EPERM;
+	}
+
+	memcpy(&screen_info, &pscreeninfo->si, sizeof(screen_info));
+	return 0;
+}
+
+static int list_find(struct _extention_list_hdr *head)
+{
+	struct _extention_list_hdr *fhead = head;
+
+	if (fhead == NULL)
+		return -1;
+
+	while(fhead != NULL) {
+		if (memcmp(&(fhead->signature), LOONGSON_MEM_LINKLIST, 3) == 0) {
+			if (parse_mem(fhead) !=0)
+				return -EPERM;
+		} else if (memcmp(&(fhead->signature), LOONGSON_VBIOS_LINKLIST, 5) == 0) {
+			if (parse_vbios(fhead) != 0)
+				return -EPERM;
+		} else if (memcmp(&(fhead->signature), LOONGSON_SCREENINFO_LINKLIST, 5) == 0) {
+			if (parse_screeninfo(fhead) != 0) {
+				return -EPERM;
+			}
+		}
+		fhead = fhead->next;
+	}
+	return 0;
+
+}
+
+void __init prom_init_env(void)
+{
+	efi_bp = (struct bootparamsinterface *)fw_arg2;
+
+	if (memcmp(&(efi_bp->signature), LOONGSON_EFIBOOT_SIGNATURE, 3) != 0) {
+		disable_acpi();
+		prom_init_env_noacpi();
+		return;
+	}
+
+	smp_group[0] = 0x900000003ff01000;
+	smp_group[1] = 0x900010003ff01000;
+	smp_group[2] = 0x900020003ff01000;
+	smp_group[3] = 0x900030003ff01000;
+
+	loongson_chipcfg[0] = 0x900000001fe00180;
+	loongson_chipcfg[1] = 0x900010001fe00180;
+	loongson_chipcfg[2] = 0x900020001fe00180;
+	loongson_chipcfg[3] = 0x900030001fe00180;
+	loongson_chiptemp[0] = 0x900000001fe0019c;
+	loongson_chiptemp[1] = 0x900010001fe0019c;
+	loongson_chiptemp[2] = 0x900020001fe0019c;
+	loongson_chiptemp[3] = 0x900030001fe0019c;
+	loongson_freqctrl[0] = 0x900000001fe001d0;
+	loongson_freqctrl[1] = 0x900010001fe001d0;
+	loongson_freqctrl[2] = 0x900020001fe001d0;
+	loongson_freqctrl[3] = 0x900030001fe001d0;
+
+	acpiboot = 1;
+	loongson_sysconf.nr_uarts = 1;
+	loongson_sysconf.ec_sci_irq = 0x7b;
+	loongson_sysconf.dma_mask_bits = 64;
+	loongson_sysconf.ht_control_base = 0x90000EFDFB000000;
+	loongson_sysconf.pci_mem_start_addr = LOONGSON_ACPI_PCI_MEM_START;
+	loongson_sysconf.pci_mem_end_addr = LOONGSON_ACPI_PCI_MEM_END;
+	loongson_sysconf.pci_io_base = LOONGSON_ACPI_PCI_IOBASE;
+	loongson_sysconf.workarounds = WORKAROUND_CPUFREQ;
+	list_find(efi_bp->extlist);
+
+	hw_coherentio = 1;
+	loongson_pch = &ls7a_pch;
+	loongson_fdt_blob = __dtb_loongson3_acpi_begin;
 }

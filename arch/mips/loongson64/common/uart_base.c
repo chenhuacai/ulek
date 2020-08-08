@@ -20,10 +20,6 @@ EXPORT_SYMBOL(_loongson_uart_base);
 void prom_init_loongson_uart_base(void)
 {
 	switch (mips_machtype) {
-	case MACH_LOONGSON_GENERIC:
-		/* The CPU provided serial port (CPU) */
-		loongson_uart_base[0] = LOONGSON_REG_BASE + 0x1e0;
-		break;
 	case MACH_LEMOTE_FL2E:
 		loongson_uart_base[0] = LOONGSON_PCIIO_BASE + 0x3f8;
 		break;
@@ -35,9 +31,13 @@ void prom_init_loongson_uart_base(void)
 	case MACH_LEMOTE_YL2F89:
 	case MACH_DEXXON_GDIUM2F10:
 	case MACH_LEMOTE_NAS:
-	default:
 		/* The CPU provided serial port (LPC) */
 		loongson_uart_base[0] = LOONGSON_LIO1_BASE + 0x3f8;
+		break;
+	case MACH_LOONGSON_GENERIC:
+	default:
+		/* The CPU provided serial port (CPU) */
+		loongson_uart_base[0] = LOONGSON_REG_BASE + 0x1e0;
 		break;
 	}
 

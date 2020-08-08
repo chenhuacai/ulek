@@ -12,9 +12,11 @@
 #include <linux/kexec.h>
 #include <linux/pm.h>
 #include <linux/slab.h>
-
+#include <linux/acpi.h>
+#include <linux/efi.h>
 #include <asm/bootinfo.h>
 #include <asm/idle.h>
+#include <asm/delay.h>
 #include <asm/reboot.h>
 
 #include <loongson.h>
@@ -47,9 +49,14 @@ static void loongson_restart(char *command)
 	/* reboot via jumping to boot base address */
 	loongson_reboot();
 #else
-	void (*fw_restart)(void) = (void *)loongson_sysconf.restart_addr;
-
-	fw_restart();
+	if (acpiboot) {
+#ifdef CONFIG_EFI
+		efi.reset_system(EFI_RESET_WARM, EFI_SUCCESS, 0, NULL);
+#endif
+	} else {
+		void (*fw_restart)(void) = (void *)loongson_sysconf.restart_addr;
+		fw_restart();
+	}
 	while (1) {
 		if (cpu_wait)
 			cpu_wait();
@@ -68,9 +75,14 @@ static void loongson_poweroff(void)
 	 */
 	return;
 #else
-	void (*fw_poweroff)(void) = (void *)loongson_sysconf.poweroff_addr;
-
-	fw_poweroff();
+	if (acpiboot) {
+#ifdef CONFIG_EFI
+		efi.reset_system(EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0, NULL);
+#endif
+	} else {
+		void (*fw_poweroff)(void) = (void *)loongson_sysconf.poweroff_addr;
+		fw_poweroff();
+	}
 	while (1) {
 		if (cpu_wait)
 			cpu_wait();

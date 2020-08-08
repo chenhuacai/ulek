@@ -24,6 +24,7 @@
  */
 
 #include <linux/pci.h>
+#include <linux/acpi.h>
 #include <linux/vgaarb.h>
 #include <asm/irq.h>
 #include <boot_param.h>
@@ -95,12 +96,27 @@ static void pci_fixup_vgadev(struct pci_dev *pdev)
 }
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_LOONGSON, PCI_DEVICE_ID_LOONGSON_DC, pci_fixup_vgadev);
 
+static void loongson_fixup_pci_pin(struct pci_dev *dev)
+{
+	if (dev->vendor == PCI_VENDOR_ID_LOONGSON
+			&& (dev->device & 0xff00) == 0x7a00) {
+		u8 fun = dev->devfn & 7;
+		dev->pin = 1 + (fun & 3);
+	}
+}
+
 /* Do platform specific device initialization at pci_enable_device() time */
 int pcibios_plat_dev_init(struct pci_dev *dev)
 {
 	dev->dev.dma_attrs = 0;
 	if (loongson_sysconf.workarounds & WORKAROUND_PCIE_DMA)
 		dev->dev.dma_attrs = DMA_ATTR_FORCE_SWIOTLB;
+
+	if (!acpi_disabled && !pci_dev_msi_enabled(dev)) {
+		if (dev->multifunction)
+			loongson_fixup_pci_pin(dev);
+		return acpi_pci_irq_enable(dev);
+	}
 
 	return 0;
 }

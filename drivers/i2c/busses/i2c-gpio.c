@@ -13,6 +13,7 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/module.h>
+#include <linux/acpi.h>
 #include <linux/of.h>
 #include <linux/platform_data/i2c-gpio.h>
 #include <linux/platform_device.h>
@@ -318,6 +319,24 @@ static void of_i2c_gpio_get_props(struct device_node *np,
 		of_property_read_bool(np, "i2c-gpio,scl-output-only");
 }
 
+static void acpi_i2c_gpio_get_props(struct device *dev,
+				  struct i2c_gpio_platform_data *pdata)
+{
+	u32 reg;
+
+	device_property_read_u32(dev, "delay-us", &pdata->udelay);
+
+	if (!device_property_read_u32(dev, "timeout-ms", &reg))
+		pdata->timeout = msecs_to_jiffies(reg);
+
+	pdata->sda_is_open_drain =
+		device_property_read_bool(dev, "sda-open-drain");
+	pdata->scl_is_open_drain =
+		device_property_read_bool(dev, "scl-open-drain");
+	pdata->scl_is_output_only =
+		device_property_read_bool(dev, "scl-output-only");
+}
+
 static struct gpio_desc *i2c_gpio_get_desc(struct device *dev,
 					   const char *con_id,
 					   unsigned int index,
@@ -363,6 +382,8 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct device_node *np = dev->of_node;
 	enum gpiod_flags gflags;
+	acpi_status status;
+	unsigned long long id;
 	int ret;
 
 	priv = devm_kzalloc(dev, sizeof(*priv), GFP_KERNEL);
@@ -375,6 +396,8 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 
 	if (np) {
 		of_i2c_gpio_get_props(np, pdata);
+	} else if(ACPI_COMPANION(dev)){
+		acpi_i2c_gpio_get_props(dev, pdata);
 	} else {
 		/*
 		 * If all platform data settings are zero it is OK
@@ -445,7 +468,13 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 	adap->dev.parent = dev;
 	adap->dev.of_node = np;
 
-	adap->nr = pdev->id;
+	if(ACPI_COMPANION(dev)) {
+		status = acpi_evaluate_integer(ACPI_HANDLE(dev), "_UID", NULL, &id);
+		if (ACPI_SUCCESS(status) && (id >= 0)) {
+			adap->nr = id;
+		}
+	} else
+		adap->nr = pdev->id;
 	ret = i2c_bit_add_numbered_bus(adap);
 	if (ret)
 		return ret;
@@ -491,10 +520,18 @@ static const struct of_device_id i2c_gpio_dt_ids[] = {
 MODULE_DEVICE_TABLE(of, i2c_gpio_dt_ids);
 #endif
 
+
+static const struct acpi_device_id i2c_gpio_acpi_match[] = {
+	{"LOON0005"},
+	{}
+};
+MODULE_DEVICE_TABLE(acpi, i2c_gpio_acpi_match);
+
 static struct platform_driver i2c_gpio_driver = {
 	.driver		= {
 		.name	= "i2c-gpio",
 		.of_match_table	= of_match_ptr(i2c_gpio_dt_ids),
+		.acpi_match_table = ACPI_PTR(i2c_gpio_acpi_match),
 	},
 	.probe		= i2c_gpio_probe,
 	.remove		= i2c_gpio_remove,

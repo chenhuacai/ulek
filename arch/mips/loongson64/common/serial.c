@@ -13,7 +13,7 @@
 #include <linux/io.h>
 #include <linux/module.h>
 #include <linux/serial_8250.h>
-
+#include <linux/acpi.h>
 #include <asm/bootinfo.h>
 
 #include <loongson.h>
@@ -56,26 +56,36 @@ static struct platform_device uart8250_device = {
 	.id = PLAT8250_DEV_PLATFORM,
 };
 
+static int __init check_pnp_uart0(void)
+{
+	return acpi_dev_present("PNP0501", "0", -1);
+}
+
 static int __init serial_init(void)
 {
 	int i;
 	unsigned char iotype;
 
-	iotype = uart8250_data[mips_machtype][0].iotype;
+	if (!check_pnp_uart0()) {
+		iotype = uart8250_data[mips_machtype][0].iotype;
 
-	if (UPIO_MEM == iotype) {
-		uart8250_data[mips_machtype][0].mapbase =
-			loongson_uart_base[0];
-		uart8250_data[mips_machtype][0].membase =
-			(void __iomem *)_loongson_uart_base[0];
+		if (UPIO_MEM == iotype) {
+			uart8250_data[mips_machtype][0].mapbase =
+				loongson_uart_base[0];
+			uart8250_data[mips_machtype][0].membase =
+				(void __iomem *)_loongson_uart_base[0];
+		}
+		else if (UPIO_PORT == iotype)
+			uart8250_data[mips_machtype][0].iobase =
+				loongson_uart_base[0] - LOONGSON_PCIIO_BASE;
+
+		if (loongson_sysconf.uarts[0].uartclk)
+			uart8250_data[mips_machtype][0].uartclk =
+				loongson_sysconf.uarts[0].uartclk;
+	} else {
+		memset(&uart8250_data[mips_machtype][0],
+			0, sizeof(struct plat_serial8250_port));
 	}
-	else if (UPIO_PORT == iotype)
-		uart8250_data[mips_machtype][0].iobase =
-			loongson_uart_base[0] - LOONGSON_PCIIO_BASE;
-
-	if (loongson_sysconf.uarts[0].uartclk)
-		uart8250_data[mips_machtype][0].uartclk =
-			loongson_sysconf.uarts[0].uartclk;
 
 	for (i = 1; i < loongson_sysconf.nr_uarts; i++) {
 		iotype = loongson_sysconf.uarts[i].iotype;

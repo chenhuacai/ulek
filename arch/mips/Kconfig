@@ -1400,7 +1400,10 @@ choice
 config CPU_LOONGSON3
 	bool "Loongson 3 CPU"
 	depends on SYS_HAS_CPU_LOONGSON3
+	select ACPI_SYSTEM_POWER_STATES_SUPPORT	if ACPI
 	select ARCH_HAS_PHYS_TO_DMA
+	select ARCH_HAS_ACPI_TABLE_UPGRADE if ACPI
+	select ARCH_SUPPORTS_ACPI
 	select CPU_SUPPORTS_64BIT_KERNEL
 	select CPU_SUPPORTS_HIGHMEM
 	select CPU_SUPPORTS_HUGEPAGES
@@ -2054,6 +2057,26 @@ config WEAK_ORDERING
 #
 config WEAK_REORDERING_BEYOND_LLSC
 	bool
+
+
+
+config EFI
+	bool "EFI runtime service support"
+	depends on ACPI
+	select UCS2_STRING
+	select EFI_RUNTIME_WRAPPERS
+	---help---
+	  This enables the kernel to use EFI runtime services that are
+	  available (such as the EFI variable services).
+
+	  This option is only useful on systems that have EFI firmware.
+	  In addition, you should use the latest ELILO loader available
+	  at <http://elilo.sourceforge.net> in order to take advantage
+	  of EFI runtime services. However, even with this option, the
+	  resultant kernel should continue to boot on existing non-EFI
+	  platforms.
+
+
 endmenu
 
 #
@@ -3224,6 +3247,10 @@ config ARCH_SUSPEND_POSSIBLE
 	depends on SYS_SUPPORTS_HOTPLUG_CPU || !SMP
 
 source "kernel/power/Kconfig"
+
+if CPU_LOONGSON3
+source "drivers/acpi/Kconfig"
+endif
 
 endmenu
 

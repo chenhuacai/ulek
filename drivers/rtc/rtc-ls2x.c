@@ -7,6 +7,7 @@
  *
  */
 
+#include <linux/acpi.h>
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/init.h>
@@ -287,6 +288,12 @@ static struct of_device_id ls2x_rtc_id_table[] = {
 };
 #endif
 
+static const struct acpi_device_id ls2x_rtc_acpi_match[] = {
+	{"LOON0001"},
+	{}
+};
+MODULE_DEVICE_TABLE(acpi, ls2x_rtc_acpi_match);
+
 static struct platform_driver ls2x_rtc_driver = {
 	.probe		= ls2x_rtc_probe,
 	.remove		= ls2x_rtc_remove,
@@ -296,6 +303,7 @@ static struct platform_driver ls2x_rtc_driver = {
 #ifdef CONFIG_OF
 		.of_match_table = of_match_ptr(ls2x_rtc_id_table),
 #endif
+		.acpi_match_table = ACPI_PTR(ls2x_rtc_acpi_match),
 	},
 };
 

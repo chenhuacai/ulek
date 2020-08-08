@@ -25,7 +25,8 @@ extern u32 memsize, highmemsize;
 extern const struct plat_smp_ops loongson3_smp_ops;
 
 /* loongson-specific command line, env and memory initialization */
-extern void __init prom_init_memory(void);
+extern void __init prom_init_memory_old(void);
+extern void __init prom_init_memory_new(void);
 extern void __init prom_init_cmdline(void);
 extern void __init prom_init_machtype(void);
 extern void __init prom_init_env(void);
@@ -355,6 +356,8 @@ extern unsigned long _loongson_addrwincfg_base;
 
 void mach_suspend(void);
 void mach_resume(void);
+void mach_common_suspend(void);
+void mach_common_resume(void);
 void loongson_suspend_enter(void);
 
 #ifdef CONFIG_HOTPLUG_CPU

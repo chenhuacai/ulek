@@ -72,11 +72,8 @@ void cmos_write64(uint64_t data, unsigned long addr)
 	for (i=0; i<8; i++)
 		CMOS_WRITE(bytes[i], addr + i);
 }
-
-void mach_suspend(void)
+void mach_common_suspend(void)
 {
-	acpi_sleep_prepare();
-
 	if (cpu_has_ftlb) {
 		loongson_regs.config4 = read_c0_config4();
 		loongson_regs.config6 = read_c0_config6();
@@ -106,11 +103,9 @@ void mach_suspend(void)
 	loongson_scache_linesz = cpu_data[0].scache.linesz;
 }
 
-void mach_resume(void)
+void mach_common_resume(void)
 {
 	local_flush_tlb_all();
-	cmos_write64(0x0, 0x40);  /* clear pc in cmos */
-	cmos_write64(0x0, 0x48);  /* clear sp in cmos */
 
 	if (cpu_has_ftlb) {
 		write_c0_config4(loongson_regs.config4);
@@ -133,6 +128,20 @@ void mach_resume(void)
 
 	loongson_pch->early_config();
 	loongson_pch->init_irq();
+}
+
+void mach_suspend(void)
+{
+	acpi_sleep_prepare();
+	mach_common_suspend();
+}
+
+void mach_resume(void)
+{
+	cmos_write64(0x0, 0x40);  /* clear pc in cmos */
+	cmos_write64(0x0, 0x48);  /* clear sp in cmos */
+
+	mach_common_resume();
 	acpi_registers_setup();
 	acpi_sleep_complete();
 }

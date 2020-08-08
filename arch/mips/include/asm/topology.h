@@ -18,4 +18,7 @@
 #define topology_sibling_cpumask(cpu)		(&cpu_sibling_map[cpu])
 #endif
 
+static inline void arch_fix_phys_package_id(int num, u32 slot)
+{
+}
 #endif /* __ASM_TOPOLOGY_H */

@@ -21,6 +21,7 @@ obj-y += kernel/
 obj-y += mm/
 obj-y += net/
 obj-y += vdso/
+obj-y += platform/
 
 ifdef CONFIG_KVM
 obj-y += kvm/

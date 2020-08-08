@@ -8,6 +8,7 @@
  * Originally written by liushaozong
  */
 
+#include <linux/acpi.h>
 #include <linux/module.h>
 #include <linux/delay.h>
 #include <linux/i2c.h>
@@ -203,8 +204,8 @@ static int ls2x_i2c_probe(struct platform_device *pdev)
 {
 	struct ls2x_i2c_dev	*dev;
 	struct i2c_adapter	*adap;
-	struct resource		*mem, *irq, *ioarea;
-	int r;
+	struct resource		*mem, *ioarea;
+	int r, irq;
 
 	/* NOTE: driver uses the static register mapping */
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -212,8 +213,8 @@ static int ls2x_i2c_probe(struct platform_device *pdev)
 		dev_err(&pdev->dev, "no mem resource?\n");
 		return -ENODEV;
 	}
-	irq = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
-	if (!irq) {
+	irq = platform_get_irq(pdev, 0);
+	if (irq <= 0) {
 		dev_err(&pdev->dev, "no irq resource?\n");
 		return -ENODEV;
 	}
@@ -233,7 +234,7 @@ static int ls2x_i2c_probe(struct platform_device *pdev)
 
 	spin_lock_init(&dev->lock);
 	dev->dev = &pdev->dev;
-	dev->irq = irq->start;
+	dev->irq = irq;
 	dev->base = ioremap(mem->start, resource_size(mem));
 	if (!dev->base) {
 		r = -ENOMEM;
@@ -247,19 +248,16 @@ static int ls2x_i2c_probe(struct platform_device *pdev)
 	adap = &dev->adapter;
 	i2c_set_adapdata(adap, dev);
 	adap->nr = pdev->id;
+	strlcpy(adap->name, pdev->name, sizeof(adap->name));
 	adap->owner = THIS_MODULE;
 	adap->class = I2C_CLASS_HWMON;
 	adap->retries = 5;
 	adap->algo = &ls2x_i2c_algo;
 	adap->dev.parent = &pdev->dev;
-#ifdef CONFIG_OF
 	adap->dev.of_node = pdev->dev.of_node;
-	adap->nr = of_alias_get_id(adap->dev.of_node, "i2c");
-#endif
-	sprintf(adap->name, "LS2X I2C%d adapter", adap->nr);
 
 	/* i2c device drivers may be active on return from add_adapter() */
-	r = i2c_add_numbered_adapter(adap);
+	r = i2c_add_adapter(adap);
 	if (r) {
 		dev_err(dev->dev, "failure adding adapter\n");
 		goto err_iounmap;
@@ -332,6 +330,11 @@ static struct of_device_id ls2x_i2c_id_table[] = {
 	{},
 };
 #endif
+static const struct acpi_device_id ls2x_i2c_acpi_match[] = {
+	{"LOON0004"},
+	{}
+};
+MODULE_DEVICE_TABLE(acpi, ls2x_i2c_acpi_match);
 
 static struct platform_driver ls2x_i2c_driver = {
 	.probe		= ls2x_i2c_probe,
@@ -343,6 +346,7 @@ static struct platform_driver ls2x_i2c_driver = {
 #ifdef CONFIG_OF
 		.of_match_table = of_match_ptr(ls2x_i2c_id_table),
 #endif
+		.acpi_match_table = ACPI_PTR(ls2x_i2c_acpi_match),
 	},
 };
 

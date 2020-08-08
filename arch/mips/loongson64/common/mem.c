@@ -17,7 +17,7 @@
 
 u32 memsize, highmemsize;
 
-void __init prom_init_memory(void)
+void __init prom_init_memory_old(void)
 {
 	add_memory_region(0x0, (memsize << 20), BOOT_MEM_RAM);
 
@@ -57,7 +57,35 @@ void __init prom_init_memory(void)
 extern unsigned int has_systab;
 extern unsigned long systab_addr;
 
-void __init prom_init_memory(void)
+void __init early_memblock_init(void)
+{
+#ifdef CONFIG_ACPI_TABLE_UPGRADE
+	int i;
+	u32 mem_type;
+	u64 mem_start, mem_end, mem_size;
+
+	/* parse memory information */
+	for (i = 0; i < loongsonlist_memmap->map_count; i++){
+		mem_type = loongsonlist_memmap->map[i].mem_type;
+		mem_start = loongsonlist_memmap->map[i].mem_start;
+		mem_size = loongsonlist_memmap->map[i].mem_size;
+		mem_end = mem_start + mem_size;
+		switch (mem_type) {
+		case SYSTEM_RAM_LOW:
+			max_low_pfn_mapped = mem_end >> PAGE_SHIFT;
+			/* fall through */
+		case SYSTEM_RAM_HIGH:
+			memblock_add(mem_start, mem_size);
+			if (max_low_pfn < (mem_end >> PAGE_SHIFT))
+				max_low_pfn = mem_end >> PAGE_SHIFT;
+			break;
+		}
+	}
+	memblock_set_current_limit(PFN_PHYS(max_low_pfn));
+#endif
+}
+
+void __init prom_init_memory_old(void)
 {
 	int i;
 	u32 node_id;
@@ -112,6 +140,67 @@ void __init prom_init_memory(void)
 }
 
 #endif /* CONFIG_LEFI_FIRMWARE_INTERFACE */
+
+void __init prom_init_memory_new(void)
+{
+	int i;
+	u32 mem_type;
+	u64 mem_start, mem_end, mem_size;
+
+	/* parse memory information */
+	for (i = 0; i < loongsonlist_memmap->map_count; i++){
+		mem_type = loongsonlist_memmap->map[i].mem_type;
+		mem_start = loongsonlist_memmap->map[i].mem_start;
+		mem_size = loongsonlist_memmap->map[i].mem_size;
+		mem_end = mem_start + mem_size;
+		switch (mem_type) {
+		case SYSTEM_RAM_LOW:
+			mem_start = PFN_ALIGN(mem_start);
+			mem_end = PFN_ALIGN(mem_end - PAGE_SIZE + 1);
+			if (mem_start >= mem_end)
+				break;
+			loongson_sysconf.low_physmem_start =
+				loongsonlist_memmap->map[i].mem_start;
+			memblock_add(loongsonlist_memmap->map[i].mem_start,
+				loongsonlist_memmap->map[i].mem_size);
+			break;
+		case SYSTEM_RAM_HIGH:
+			mem_start = PFN_ALIGN(mem_start);
+			mem_end = PFN_ALIGN(mem_end - PAGE_SIZE + 1);
+			if (mem_start >= mem_end)
+				break;
+			loongson_sysconf.high_physmem_start =
+				loongsonlist_memmap->map[i].mem_start;
+			memblock_add(loongsonlist_memmap->map[i].mem_start,
+				loongsonlist_memmap->map[i].mem_size);
+			break;
+		case SYSTEM_RAM_RESERVED:
+			memblock_reserve(loongsonlist_memmap->map[i].mem_start,
+				loongsonlist_memmap->map[i].mem_size);
+			break;
+		case SMBIOS_TABLE:
+			has_systab = 1;
+			systab_addr = loongsonlist_memmap->map[i].mem_start;
+			memblock_reserve(loongsonlist_memmap->map[i].mem_start,
+				loongsonlist_memmap->map[i].mem_size);
+			break;
+		case UMA_VIDEO_RAM:
+			loongson_sysconf.vram_type = VRAM_TYPE_UMA;
+			loongson_sysconf.uma_vram_addr = loongsonlist_memmap->map[i].mem_start;
+			loongson_sysconf.uma_vram_size = loongsonlist_memmap->map[i].mem_size;
+			memblock_add(loongsonlist_memmap->map[i].mem_start,
+				loongsonlist_memmap->map[i].mem_size);
+			break;
+		case VUMA_VIDEO_RAM:
+			loongson_sysconf.vram_type = VRAM_TYPE_UMA;
+			loongson_sysconf.vuma_vram_addr = loongsonlist_memmap->map[i].mem_start;
+			loongson_sysconf.vuma_vram_size = loongsonlist_memmap->map[i].mem_size;
+			memblock_reserve(loongsonlist_memmap->map[i].mem_start,
+				loongsonlist_memmap->map[i].mem_size);
+			break;
+		}
+	}
+}
 
 /* override of arch/mips/mm/cache.c: __uncached_access */
 int __uncached_access(struct file *file, unsigned long addr)

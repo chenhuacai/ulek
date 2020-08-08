@@ -8,6 +8,7 @@
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/i2c.h>
+#include <linux/acpi.h>
 #include <linux/types.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
@@ -178,6 +179,10 @@ static void __init ls2h_arch_initcall(void)
 		loongson_sysconf.pci_mem_end_addr = LOONGSON_PCI_MEM_START + 0x40000000UL - 1;
 	pci_mem_size = loongson_sysconf.pci_mem_end_addr - loongson_sysconf.pci_mem_start_addr + 1;
 
+#ifdef CONFIG_ACPI
+	if(!acpi_pci_disabled)
+		return;
+#endif
 	ioport_resource.end = 0xffffffff;
 	for (i = 0; i < nr_pci_ports; i++) {
 		pci_io_resource[i].start = 0x400000*i + 0x100000;

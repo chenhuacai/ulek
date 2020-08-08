@@ -27,6 +27,7 @@ obj-$(CONFIG_SOC_AR71XX)	+= pci-ar71xx.o
 obj-$(CONFIG_PCI_AR724X)	+= pci-ar724x.o
 obj-$(CONFIG_MIPS_PCI_VIRTIO)	+= pci-virtio-guest.o
 obj-$(CONFIG_PCI_XTALK_BRIDGE)	+= pci-xtalk-bridge.o
+obj-$(CONFIG_ACPI)		+= acpi.o
 #
 # These are still pretty much in the old state, watch, go blind.
 #

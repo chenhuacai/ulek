@@ -23,6 +23,23 @@ EXPORT_SYMBOL(PCIBIOS_MIN_IO);
 unsigned long PCIBIOS_MIN_MEM;
 EXPORT_SYMBOL(PCIBIOS_MIN_MEM);
 
+int raw_pci_read(unsigned int domain, unsigned int bus, unsigned int devfn,int reg, int len, u32 *val)
+{
+	struct pci_bus * bus_tmp = pci_find_bus(domain, bus);
+	if (bus_tmp)
+		return bus_tmp->ops->read(bus_tmp, devfn, reg, len, val);
+	return -EINVAL;
+}
+
+int raw_pci_write(unsigned int domain, unsigned int bus, unsigned int devfn,
+						int reg, int len, u32 val)
+{
+	struct pci_bus * bus_tmp = pci_find_bus(domain, bus);
+	if (bus_tmp)
+		return bus_tmp->ops->write(bus_tmp, devfn, reg, len, val);
+	return -EINVAL;
+}
+
 static int __init pcibios_set_cache_line_size(void)
 {
 	unsigned int lsize;

@@ -2,6 +2,8 @@
 #ifndef __ASM_MACH_LOONGSON64_BOOT_PARAM_H_
 #define __ASM_MACH_LOONGSON64_BOOT_PARAM_H_
 
+#include <linux/screen_info.h>
+
 #define SYSTEM_RAM_LOW		1
 #define SYSTEM_RAM_HIGH		2
 #define SYSTEM_RAM_RESERVED	3
@@ -231,12 +233,54 @@ struct loongson_system_configuration {
 	u64 workarounds;
 };
 
+#define LOONGSON_EFIBOOT_SIGNATURE	"BPI"
+#define LOONGSON_MEM_LINKLIST		"MEM"
+#define LOONGSON_VBIOS_LINKLIST		"VBIOS"
+#define LOONGSON_SCREENINFO_LINKLIST	"SINFO"
+
+struct _extention_list_hdr {
+	u64	signature;
+	u32	length;
+	u8	revision;
+	u8	checksum;
+	struct	_extention_list_hdr *next;
+} __packed;
+
+struct bootparamsinterface {
+	u64	signature;	/*{"B", "P", "I", "_", "0", "_", "1"}*/
+	void	*systemtable;
+	struct	_extention_list_hdr *extlist;
+} __packed;
+
+struct loongsonlist_mem_map {
+	struct	_extention_list_hdr header;	/*{"M", "E", "M"}*/
+	u8	map_count;
+	struct	_loongson_mem_map {
+		u32 mem_type;
+		u64 mem_start;
+		u64 mem_size;
+	} __packed map[LOONGSON3_BOOT_MEM_MAP_MAX];
+} __packed;
+
+struct loongsonlist_vbios {
+	struct	_extention_list_hdr header;
+	u64	vbios_addr;
+} __packed;
+
+struct loongsonlist_screeninfo{
+	struct	_extention_list_hdr header;
+	struct	screen_info si;
+} __packed;
+
+extern bool acpiboot;
 extern void *loongson_fdt_blob;
+extern u32 __dtb_loongson3_acpi_begin[];
 extern u32 __dtb_loongson3_ls2h_begin[];
 extern u32 __dtb_loongson3_ls7a_begin[];
 extern u32 __dtb_loongson3_rs780_begin[];
 extern u32 __dtb_loongson3_virtual_begin[];
 extern struct efi_memory_map_loongson *loongson_memmap;
+extern struct loongsonlist_mem_map *loongsonlist_memmap;
 extern struct loongson_system_configuration loongson_sysconf;
 
 #endif

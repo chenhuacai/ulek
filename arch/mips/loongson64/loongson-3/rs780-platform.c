@@ -4,6 +4,7 @@
  *  Copyright (C) 2014-2017, Lemote, Inc.
  */
 #include <linux/init.h>
+#include <linux/acpi.h>
 #include <asm/io.h>
 #include <pci.h>
 #include <boot_param.h>
@@ -45,6 +46,14 @@ static void __init rs780_arch_initcall(void)
 	pci_io_resource.end    = 0x3ffff;
 	ioport_resource.end    = 0xfffff;
 	rs780_pci_controller.io_map_base = mips_io_port_base;
+#ifdef CONFIG_ACPI
+	if(!acpi_pci_disabled) {
+		acpi_controller = &rs780_pci_controller;
+		acpi_mem_resource = &pci_mem_resource;
+		acpi_io_resource = &pci_io_resource;
+		return;
+	}
+#endif
 	register_pci_controller(&rs780_pci_controller);
 }
 

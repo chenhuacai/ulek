@@ -78,6 +78,8 @@
 	dla	a0, wakeup_start	/* resume path */
 	li      a1, 0x40
 	jal     cmos_write64
+	PTR_LA  k0, acpi_saved_sp
+	sd	sp, (k0)
 .endm
 
 /* Sleep code for Loongson-3 */
@@ -131,10 +133,7 @@ flushL2_node:
 	nop
 END(loongson_suspend_enter)
 
-	/* This is where we return upon wakeup.
-	 * Reload all of the registers and return.
-	 */
-LEAF(wakeup_start)
+.macro  SETUP_WAKEUP
 	lw	k0, PT_R8(sp)
 	mtc0	k0, CP0_EBASE
 	lw	k0, PT_R9(sp)
@@ -171,9 +170,16 @@ LEAF(wakeup_start)
 	ld	$28, PT_R28(sp)
 	ld	$30, PT_R30(sp)
 	ld	$31, PT_R31(sp)
+.endm
 
+	/* This is where we return upon wakeup.
+	 * Reload all of the registers and return.
+	 */
+LEAF(wakeup_start)
+	PTR_LA  k0, acpi_saved_sp
+	ld	sp, (k0)
+	SETUP_WAKEUP
 	daddiu	sp, PT_SIZE
 	jr	ra
 END(wakeup_start)
-
 	.set pop

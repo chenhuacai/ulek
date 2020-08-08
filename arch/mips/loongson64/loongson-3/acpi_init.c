@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: GPL-2.0
 #include <linux/io.h>
+#include <linux/acpi.h>
 #include <linux/init.h>
 #include <linux/input.h>
 #include <linux/ioport.h>
 #include <linux/export.h>
 #include <linux/interrupt.h>
+#include <linux/pm_wakeirq.h>
 #include <loongson-pch.h>
 
 static int acpi_irq;
@@ -124,6 +126,9 @@ static int __init power_button_init(void)
 {
 	int ret;
 
+	if (!acpi_disabled)
+		return -EINVAL;
+
 	if (!acpi_irq)
 		return -ENODEV;
 
@@ -149,6 +154,9 @@ static int __init power_button_init(void)
 		return ret;
 	}
 
+	dev_pm_set_wake_irq(&button->dev, acpi_irq);
+	device_set_wakeup_capable(&button->dev, true);
+	device_set_wakeup_enable(&button->dev, true);
 	pr_info("ACPI Power Button Driver: Init successful!\n");
 
 	return 0;

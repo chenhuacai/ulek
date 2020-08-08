@@ -1450,11 +1450,18 @@ static int __i2c_add_numbered_adapter(struct i2c_adapter *adap)
 int i2c_add_adapter(struct i2c_adapter *adapter)
 {
 	struct device *dev = &adapter->dev;
-	int id;
+	acpi_status status;
+	unsigned long long id;
 
 	if (dev->of_node) {
 		id = of_alias_get_id(dev->of_node, "i2c");
 		if (id >= 0) {
+			adapter->nr = id;
+			return __i2c_add_numbered_adapter(adapter);
+		}
+	} else if (dev->parent->fwnode) {
+		status = acpi_evaluate_integer(ACPI_HANDLE(dev->parent), "_UID", NULL, &id);
+		if (ACPI_SUCCESS(status) && (id >= 0)) {
 			adapter->nr = id;
 			return __i2c_add_numbered_adapter(adapter);
 		}

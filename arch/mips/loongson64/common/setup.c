@@ -17,6 +17,7 @@
 #ifdef CONFIG_VT
 #include <linux/console.h>
 #include <linux/screen_info.h>
+#include <linux/platform_device.h>
 #endif
 
 static void wbflush_loongson(void)
@@ -54,6 +55,17 @@ void __init plat_mem_setup(void)
 	if (loongson_fdt_blob)
 		__dt_setup_arch(loongson_fdt_blob);
 }
+
+static int __init register_gop_device(void)
+{
+	void *pd;
+	if (screen_info.orig_video_isVGA != VIDEO_TYPE_EFI)
+		return 0;
+	pd = platform_device_register_data(NULL, "efi-framebuffer", 0,
+			&screen_info, sizeof(screen_info));
+	return PTR_ERR_OR_ZERO(pd);
+}
+subsys_initcall(register_gop_device);
 
 #define NR_CELLS 6
 
