@@ -165,6 +165,7 @@ struct kvm_vcpu_stat {
 	u64 msa_fpe_exits;
 	u64 fpe_exits;
 	u64 msa_disabled_exits;
+	u64 asx_disabled_exits;
 	u64 flush_dcache_exits;
 #ifdef CONFIG_KVM_MIPS_VZ
 	u64 vz_gpsi_exits;
@@ -346,6 +347,7 @@ struct kvm_mmu_memory_cache {
 
 #define KVM_MIPS_AUX_FPU	0x1
 #define KVM_MIPS_AUX_MSA	0x2
+#define KVM_MIPS_AUX_ASX	0x4
 
 #define KVM_MIPS_GUEST_TLB_SIZE	64
 struct kvm_vcpu_arch {
@@ -365,6 +367,7 @@ struct kvm_vcpu_arch {
 	u32 host_cp0_guestctl0;
 	u32 host_cp0_badinstr;
 	u32 host_cp0_badinstrp;
+	u32 host_cp0_diag1;
 
 	/* GPRS */
 	unsigned long gprs[32];
@@ -443,6 +446,7 @@ struct kvm_vcpu_arch {
 
 	u8 fpu_enabled;
 	u8 msa_enabled;
+	u8 asx_enabled;
 };
 
 static inline void _kvm_atomic_set_c0_guest_reg(unsigned long *reg,
@@ -804,6 +808,18 @@ static inline bool kvm_mips_guest_has_msa(struct kvm_vcpu_arch *vcpu)
 		kvm_read_c0_guest_config3(vcpu->cop0) & MIPS_CONF3_MSA;
 }
 
+static inline bool kvm_mips_guest_can_have_asx(struct kvm_vcpu_arch *vcpu)
+{
+	return (!__builtin_constant_p(cpu_has_asx) || cpu_has_asx) &&
+		vcpu->asx_enabled;
+}
+
+static inline bool kvm_mips_guest_has_asx(struct kvm_vcpu_arch *vcpu)
+{
+	return kvm_mips_guest_can_have_asx(vcpu) &&
+		kvm_read_sw_gc0_config6(vcpu->cop0) & MIPS_CONF6_LASXMODE;
+}
+
 struct kvm_mips_callbacks {
 	int (*handle_cop_unusable)(struct kvm_vcpu *vcpu);
 	int (*handle_tlb_mod)(struct kvm_vcpu *vcpu);
@@ -818,6 +834,7 @@ struct kvm_mips_callbacks {
 	int (*handle_msa_fpe)(struct kvm_vcpu *vcpu);
 	int (*handle_fpe)(struct kvm_vcpu *vcpu);
 	int (*handle_msa_disabled)(struct kvm_vcpu *vcpu);
+	int (*handle_asx_disabled)(struct kvm_vcpu *vcpu);
 	int (*handle_guest_exit)(struct kvm_vcpu *vcpu);
 	int (*hardware_enable)(void);
 	void (*hardware_disable)(void);
@@ -870,16 +887,21 @@ void *kvm_mips_build_tlb_refill_exception(void *addr, void *handler);
 void *kvm_mips_build_exception(void *addr, void *handler);
 void *kvm_mips_build_exit(void *addr);
 
-/* FPU/MSA context management */
+/* FPU/MSA/ASX context management */
 void __kvm_save_fpu(struct kvm_vcpu_arch *vcpu);
 void __kvm_restore_fpu(struct kvm_vcpu_arch *vcpu);
 void __kvm_restore_fcsr(struct kvm_vcpu_arch *vcpu);
 void __kvm_save_msa(struct kvm_vcpu_arch *vcpu);
 void __kvm_restore_msa(struct kvm_vcpu_arch *vcpu);
 void __kvm_restore_msa_upper(struct kvm_vcpu_arch *vcpu);
+void __kvm_save_asx(struct kvm_vcpu_arch *vcpu);
+void __kvm_restore_asx(struct kvm_vcpu_arch *vcpu);
+void __kvm_restore_asx_upper128(struct kvm_vcpu_arch *vcpu);
+void __kvm_restore_asx_upper192(struct kvm_vcpu_arch *vcpu);
 void __kvm_restore_msacsr(struct kvm_vcpu_arch *vcpu);
 void kvm_own_fpu(struct kvm_vcpu *vcpu);
 void kvm_own_msa(struct kvm_vcpu *vcpu);
+void kvm_own_asx(struct kvm_vcpu *vcpu);
 void kvm_drop_fpu(struct kvm_vcpu *vcpu);
 void kvm_lose_fpu(struct kvm_vcpu *vcpu);
 

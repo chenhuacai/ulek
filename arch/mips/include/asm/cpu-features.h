@@ -531,6 +531,12 @@
 # define cpu_has_msa		0
 #endif
 
+#if defined(CONFIG_CPU_HAS_ASX) && !defined(cpu_has_asx)
+# define cpu_has_asx		__ase(MIPS_ASE_LOONGSON_ASX)
+#elif !defined(cpu_has_asx)
+# define cpu_has_asx		0
+#endif
+
 #ifndef cpu_has_ufr
 # define cpu_has_ufr		__opt(MIPS_CPU_UFR)
 #endif

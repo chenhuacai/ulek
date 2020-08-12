@@ -1935,6 +1935,14 @@ static void decode_loongson_cpucfg(struct cpuinfo_mips *c)
 #ifdef CONFIG_CPU_LOONGSON3
 	unsigned int cpucfg;
 
+#ifdef CONFIG_CPU_HAS_ASX
+	cpucfg = read_cpucfg(LOONGSON_CFG1);
+	if (cpucfg & LOONGSON_CFG1_LASX) {
+		c->ases |= MIPS_ASE_LOONGSON_ASX;
+		set_c0_config6(MIPS_CONF6_LASXMODE);
+	}
+#endif
+
 	cpucfg = read_cpucfg(LOONGSON_CFG2);
 	if (cpucfg & LOONGSON_CFG2_LLFTP)
 		c->options |= MIPS_CPU_CONST_TIMER;

@@ -12,9 +12,20 @@
 
 #include <asm/inst.h>
 
+enum {
+	CTX_MSA = 1,
+	CTX_ASX = 2,
+};
+
 extern void _save_msa(struct task_struct *);
 extern void _restore_msa(struct task_struct *);
 extern void _init_msa_upper(void);
+
+#ifdef CONFIG_CPU_HAS_ASX
+extern void _save_asx(struct task_struct *);
+extern void _restore_asx(struct task_struct *);
+extern void _init_asx_upper(void);
+#endif
 
 extern void read_msa_wr_b(unsigned idx, union fpureg *to);
 extern void read_msa_wr_h(unsigned idx, union fpureg *to);
@@ -120,15 +131,25 @@ static inline int is_msa_enabled(void)
 
 static inline int thread_msa_context_live(void)
 {
+	int ret = 0;
+
 	/*
 	 * Check cpu_has_msa only if it's a constant. This will allow the
 	 * compiler to optimise out code for CPUs without MSA without adding
 	 * an extra redundant check for CPUs with MSA.
 	 */
 	if (__builtin_constant_p(cpu_has_msa) && !cpu_has_msa)
-		return 0;
+		goto out;
 
-	return test_thread_flag(TIF_MSA_CTX_LIVE);
+	ret = test_thread_flag(TIF_MSA_CTX_LIVE) ? CTX_MSA : 0;
+
+	if (__builtin_constant_p(cpu_has_asx) && !cpu_has_asx)
+		goto out;
+
+	ret = test_thread_flag(TIF_ASX_CTX_LIVE) ? CTX_ASX : ret;
+
+out:
+	return ret;
 }
 
 static inline void save_msa(struct task_struct *t)
@@ -155,6 +176,64 @@ static inline void init_msa_upper(void)
 
 	_init_msa_upper();
 }
+
+#ifdef CONFIG_CPU_HAS_ASX
+
+static inline void enable_asx(void)
+{
+	if (cpu_has_asx)
+		set_c0_config(MIPS_CONF_LASXEN);
+}
+
+static inline void disable_asx(void)
+{
+	if (cpu_has_asx)
+		clear_c0_config(MIPS_CONF_LASXEN);
+}
+
+static inline int is_asx_enabled(void)
+{
+	if (!cpu_has_asx)
+		return 0;
+
+	return (read_c0_config() & MIPS_CONF_LASXEN);
+}
+
+static inline void save_asx(struct task_struct *t)
+{
+	if (cpu_has_asx)
+		_save_asx(t);
+}
+
+static inline void restore_asx(struct task_struct *t)
+{
+	if (cpu_has_asx)
+		_restore_asx(t);
+}
+
+static inline void init_asx_upper(void)
+{
+	/*
+	 * Check cpu_has_asx only if it's a constant. This will allow the
+	 * compiler to optimise out code for CPUs without ASX without adding
+	 * an extra redundant check for CPUs with ASX.
+	 */
+	if (__builtin_constant_p(cpu_has_asx) && !cpu_has_asx)
+		return;
+
+	_init_asx_upper();
+}
+
+#else
+
+static inline void enable_asx(void) {}
+static inline void disable_asx(void) {}
+static inline int is_asx_enabled(void) { return 0; }
+static inline void save_asx(struct task_struct *t) {}
+static inline void restore_asx(struct task_struct *t) {}
+static inline void init_asx_upper(void) {}
+
+#endif
 
 #ifndef TOOLCHAIN_SUPPORTS_MSA
 /*

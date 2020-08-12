@@ -1312,18 +1312,13 @@ static int enable_restore_fp_context(int msa)
 	 * opportunity to see data left behind by another.
 	 */
 	prior_msa = test_and_set_thread_flag(TIF_MSA_CTX_LIVE);
-	if (!prior_msa && was_fpu_owner) {
-		init_msa_upper();
-
-		goto out;
-	}
-
 	if (!prior_msa) {
 		/*
 		 * Restore the least significant 64b of each vector register
 		 * from the existing scalar FP context.
 		 */
-		_restore_fp(current);
+		if (!was_fpu_owner)
+			_restore_fp(current);
 
 		/*
 		 * The task has not formerly used MSA, so clear the upper 64b
@@ -1332,13 +1327,18 @@ static int enable_restore_fp_context(int msa)
 		 */
 		init_msa_upper();
 	} else {
-		/* We need to restore the vector context. */
-		restore_msa(current);
-
 		/* Restore the scalar FP control & status register */
 		if (!was_fpu_owner)
 			write_32bit_cp1_register(CP1_STATUS,
 						 current->thread.fpu.fcr31);
+
+		/* We need to restore the vector context. */
+		if (!test_thread_flag(TIF_ASX_CTX_LIVE))
+			restore_msa(current);
+		else {
+			enable_asx();
+			restore_asx(current);
+		}
 	}
 
 out:
@@ -1878,13 +1878,37 @@ asmlinkage void do_gsexc(struct pt_regs *regs, u32 diag1)
 
 	prev_state = exception_enter();
 
+	die_if_kernel("do_gsexc invoked from kernel context!", regs);
+
 	switch (exccode) {
-	case 0x08:
-		/* Undocumented exception, will trigger on certain
-		 * also-undocumented instructions accessible from userspace.
-		 * Processor state is not otherwise corrupted, but currently
-		 * we don't know how to proceed. Maybe there is some
-		 * undocumented control flag to enable the instructions?
+	case GSEXCCODE_LASXDIS:
+		if (!cpu_has_asx || test_thread_flag(TIF_32BIT_FPREGS)) {
+			force_sig(SIGILL);
+			break;
+		}
+
+		preempt_disable();
+
+		set_thread_flag(TIF_ASX_CTX_LIVE);
+
+		if(!is_fpu_owner()) {
+			own_fpu_inatomic(0);
+			write_32bit_cp1_register(CP1_STATUS, current->thread.fpu.fcr31);
+			enable_msa();
+			restore_msa(current);
+			set_thread_flag(TIF_USEDMSA);
+		}
+
+		enable_asx();
+		init_asx_upper();
+
+		preempt_enable();
+
+		break;
+
+	case GSEXCCODE_LBTDIS:
+		/* LBT (Loongson's binary translation) disabled exception, will
+		 * trigger on certain LBT instructions accessible from userspace.
 		 */
 		force_sig(SIGILL);
 		break;

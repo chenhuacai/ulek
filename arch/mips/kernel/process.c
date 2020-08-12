@@ -74,6 +74,7 @@ void start_thread(struct pt_regs * regs, unsigned long pc, unsigned long sp)
 	regs->cp0_status = status;
 	lose_fpu(0);
 	clear_thread_flag(TIF_MSA_CTX_LIVE);
+	clear_thread_flag(TIF_ASX_CTX_LIVE);
 	clear_used_math();
 	atomic_set(&current->thread.bd_emu_frame, BD_EMUFRAME_NONE);
 	init_dsp();
@@ -108,7 +109,9 @@ int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 	 */
 	preempt_disable();
 
-	if (is_msa_enabled())
+	if (is_asx_enabled())
+		save_asx(current);
+	else if (is_msa_enabled())
 		save_msa(current);
 	else if (is_fpu_owner())
 		_save_fp(current);
@@ -177,6 +180,7 @@ int copy_thread_tls(unsigned long clone_flags, unsigned long usp,
 	clear_tsk_thread_flag(p, TIF_USEDFPU);
 	clear_tsk_thread_flag(p, TIF_USEDMSA);
 	clear_tsk_thread_flag(p, TIF_MSA_CTX_LIVE);
+	clear_tsk_thread_flag(p, TIF_ASX_CTX_LIVE);
 
 #ifdef CONFIG_MIPS_MT_FPAFF
 	clear_tsk_thread_flag(p, TIF_FPUBOUND);

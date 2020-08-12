@@ -1408,6 +1408,7 @@ config CPU_LOONGSON3
 	select CPU_SUPPORTS_HIGHMEM
 	select CPU_SUPPORTS_HUGEPAGES
 	select CPU_SUPPORTS_MSA
+	select CPU_SUPPORTS_ASX
 	select CPU_HAS_LOAD_STORE_LR
 	select WEAK_ORDERING
 	select WEAK_REORDERING_BEYOND_LLSC
@@ -2562,6 +2563,14 @@ config CPU_HAS_MSA
 
 	  If unsure, say Y.
 
+config CPU_HAS_ASX
+	bool "Support for the Loongson Advanced SIMD Extension"
+	depends on CPU_SUPPORTS_ASX
+	depends on 64BIT && CPU_HAS_MSA
+	help
+	  Loongson Advanced SIMD Extension (ASX) is 256 bit wide SIMD extension
+	  first introduced in Loongson-3A4000. It is compatible with MSA.
+
 config CPU_HAS_WB
 	bool
 
@@ -2662,6 +2671,9 @@ config SYS_SUPPORTS_MIPS16
 	  words, it makes the kernel MIPS16-tolerant.
 
 config CPU_SUPPORTS_MSA
+	bool
+
+config CPU_SUPPORTS_ASX
 	bool
 
 config ARCH_FLATMEM_ENABLE

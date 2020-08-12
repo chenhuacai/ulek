@@ -58,6 +58,7 @@ struct kvm_stats_debugfs_item debugfs_entries[] = {
 	{ "msa_fpe",	  VCPU_STAT(msa_fpe_exits),	 KVM_STAT_VCPU },
 	{ "fpe",	  VCPU_STAT(fpe_exits),		 KVM_STAT_VCPU },
 	{ "msa_disabled", VCPU_STAT(msa_disabled_exits), KVM_STAT_VCPU },
+	{ "asx_disabled", VCPU_STAT(asx_disabled_exits), KVM_STAT_VCPU },
 	{ "flush_dcache", VCPU_STAT(flush_dcache_exits), KVM_STAT_VCPU },
 #ifdef CONFIG_KVM_MIPS_VZ
 	{ "vz_gpsi",	  VCPU_STAT(vz_gpsi_exits),	 KVM_STAT_VCPU },
@@ -598,8 +599,11 @@ static unsigned long kvm_mips_num_regs(struct kvm_vcpu *vcpu)
 		if (boot_cpu_data.fpu_id & MIPS_FPIR_F64)
 			ret += 16;
 	}
-	if (kvm_mips_guest_can_have_msa(&vcpu->arch))
+	if (kvm_mips_guest_can_have_msa(&vcpu->arch)) {
 		ret += ARRAY_SIZE(kvm_mips_get_one_regs_msa) + 32;
+		if (kvm_mips_guest_has_asx(&vcpu->arch))
+			ret += 32;
+	}
 	ret += kvm_mips_callbacks->num_regs(vcpu);
 
 	return ret;
@@ -645,7 +649,10 @@ static int kvm_mips_copy_reg_indices(struct kvm_vcpu *vcpu, u64 __user *indices)
 		indices += ARRAY_SIZE(kvm_mips_get_one_regs_msa);
 
 		for (i = 0; i < 32; ++i) {
-			index = KVM_REG_MIPS_VEC_128(i);
+			if (kvm_mips_guest_has_asx(&vcpu->arch))
+				index = KVM_REG_MIPS_VEC_256(i);
+			else
+				index = KVM_REG_MIPS_VEC_128(i);
 			if (copy_to_user(indices, &index, sizeof(index)))
 				return -EFAULT;
 			++indices;
@@ -663,6 +670,7 @@ static int kvm_mips_get_reg(struct kvm_vcpu *vcpu,
 	int ret;
 	s64 v;
 	s64 vs[2];
+	s64 avs[4];
 	unsigned int idx;
 
 	switch (reg->id) {
@@ -731,6 +739,28 @@ static int kvm_mips_get_reg(struct kvm_vcpu *vcpu,
 		vs[1] = get_fpr64(&fpu->fpr[idx], 0);
 #endif
 		break;
+	/* LOONGSON SIMD Architecture Extention (ASX) registers */
+	case KVM_REG_MIPS_VEC_256(0) ... KVM_REG_MIPS_VEC_256(31):
+		if (!kvm_mips_guest_has_asx(&vcpu->arch))
+			return -EINVAL;
+		/* Can't access MSA registers in FR=0 mode */
+		if (!(kvm_read_c0_guest_status(cop0) & ST0_FR))
+			return -EINVAL;
+		idx = reg->id - KVM_REG_MIPS_VEC_256(0);
+#ifdef CONFIG_CPU_LITTLE_ENDIAN
+		/* least significant byte first */
+		avs[0] = get_fpr64(&fpu->fpr[idx], 0);
+		avs[1] = get_fpr64(&fpu->fpr[idx], 1);
+		avs[2] = get_fpr64(&fpu->fpr[idx], 2);
+		avs[3] = get_fpr64(&fpu->fpr[idx], 3);
+#else
+		/* most significant byte first */
+		avs[0] = get_fpr64(&fpu->fpr[idx], 3);
+		avs[1] = get_fpr64(&fpu->fpr[idx], 2);
+		avs[2] = get_fpr64(&fpu->fpr[idx], 1);
+		avs[3] = get_fpr64(&fpu->fpr[idx], 0);
+#endif
+		break;
 	case KVM_REG_MIPS_MSA_IR:
 		if (!kvm_mips_guest_has_msa(&vcpu->arch))
 			return -EINVAL;
@@ -762,6 +792,10 @@ static int kvm_mips_get_reg(struct kvm_vcpu *vcpu,
 		void __user *uaddr = (void __user *)(long)reg->addr;
 
 		return copy_to_user(uaddr, vs, 16) ? -EFAULT : 0;
+	} else if ((reg->id & KVM_REG_SIZE_MASK) == KVM_REG_SIZE_U256) {
+		void __user *uaddr = (void __user *)(long)reg->addr;
+
+		return copy_to_user(uaddr, avs, 32) ? -EFAULT : 0;
 	} else {
 		return -EINVAL;
 	}
@@ -774,6 +808,7 @@ static int kvm_mips_set_reg(struct kvm_vcpu *vcpu,
 	struct mips_fpu_struct *fpu = &vcpu->arch.fpu;
 	s64 v;
 	s64 vs[2];
+	s64 avs[4];
 	unsigned int idx;
 
 	if ((reg->id & KVM_REG_SIZE_MASK) == KVM_REG_SIZE_U64) {
@@ -792,6 +827,10 @@ static int kvm_mips_set_reg(struct kvm_vcpu *vcpu,
 		void __user *uaddr = (void __user *)(long)reg->addr;
 
 		return copy_from_user(vs, uaddr, 16) ? -EFAULT : 0;
+	} else if ((reg->id & KVM_REG_SIZE_MASK) == KVM_REG_SIZE_U256) {
+		void __user *uaddr = (void __user *)(long)reg->addr;
+
+		return copy_from_user(avs, uaddr, 32) ? -EFAULT : 0;
 	} else {
 		return -EINVAL;
 	}
@@ -862,6 +901,25 @@ static int kvm_mips_set_reg(struct kvm_vcpu *vcpu,
 		set_fpr64(&fpu->fpr[idx], 0, vs[1]);
 #endif
 		break;
+	/* LOONGSON SIMD Architecture Extention (ASX) registers */
+	case KVM_REG_MIPS_VEC_256(0) ... KVM_REG_MIPS_VEC_256(31):
+		if (!kvm_mips_guest_has_asx(&vcpu->arch))
+			return -EINVAL;
+		idx = reg->id - KVM_REG_MIPS_VEC_256(0);
+#ifdef CONFIG_CPU_LITTLE_ENDIAN
+		/* least significant byte first */
+		set_fpr64(&fpu->fpr[idx], 0, avs[0]);
+		set_fpr64(&fpu->fpr[idx], 1, avs[1]);
+		set_fpr64(&fpu->fpr[idx], 2, avs[2]);
+		set_fpr64(&fpu->fpr[idx], 3, avs[3]);
+#else
+		/* most significant byte first */
+		set_fpr64(&fpu->fpr[idx], 3, avs[0]);
+		set_fpr64(&fpu->fpr[idx], 2, avs[1]);
+		set_fpr64(&fpu->fpr[idx], 1, avs[2]);
+		set_fpr64(&fpu->fpr[idx], 0, avs[3]);
+#endif
+		break;
 	case KVM_REG_MIPS_MSA_IR:
 		if (!kvm_mips_guest_has_msa(&vcpu->arch))
 			return -EINVAL;
@@ -898,6 +956,9 @@ static int kvm_vcpu_ioctl_enable_cap(struct kvm_vcpu *vcpu,
 		break;
 	case KVM_CAP_MIPS_MSA:
 		vcpu->arch.msa_enabled = true;
+		break;
+	case KVM_CAP_MIPS_ASX:
+		vcpu->arch.asx_enabled = true;
 		break;
 	default:
 		r = -EINVAL;
@@ -1148,6 +1209,9 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		 */
 		r = cpu_has_msa && !(boot_cpu_data.msa_id & MSA_IR_WRPF);
 		break;
+	case KVM_CAP_MIPS_ASX:
+		r = cpu_has_asx && !(boot_cpu_data.msa_id & MSA_IR_WRPF);
+		break;
 	default:
 		r = kvm_mips_callbacks->check_extension(kvm, ext);
 		break;
@@ -1295,7 +1359,7 @@ static void kvm_mips_set_c0_status(void)
 int kvm_mips_handle_exit(struct kvm_run *run, struct kvm_vcpu *vcpu)
 {
 	u32 cause = vcpu->arch.host_cp0_cause;
-	u32 exccode = (cause >> CAUSEB_EXCCODE) & 0x1f;
+	u32 exccode = (cause >> CAUSEB_EXCCODE) & 0x1f, gsexccode;
 	u32 __user *opc = (u32 __user *) vcpu->arch.pc;
 	unsigned long badvaddr = vcpu->arch.host_cp0_badvaddr;
 	enum emulation_result er = EMULATE_DONE;
@@ -1434,6 +1498,17 @@ int kvm_mips_handle_exit(struct kvm_run *run, struct kvm_vcpu *vcpu)
 		ret = kvm_mips_callbacks->handle_guest_exit(vcpu);
 		break;
 
+	case LOONGSON_EXCCODE_GSEXC:
+		gsexccode = (vcpu->arch.host_cp0_diag1 & LOONGSON_DIAG1_EXCCODE) >> LOONGSON_DIAG1_EXCCODE_SHIFT;
+
+		if (gsexccode == GSEXCCODE_LASXDIS) {
+			++vcpu->stat.asx_disabled_exits;
+			ret = kvm_mips_callbacks->handle_asx_disabled(vcpu);
+		} else {
+			kvm_err("Unhandled GSEXC %x @ %lx\n", gsexccode, vcpu->arch.pc);
+		}
+		break;
+
 	default:
 		if (cause & CAUSEF_BD)
 			opc += 1;
@@ -1527,7 +1602,7 @@ void kvm_own_fpu(struct kvm_vcpu *vcpu)
 	 * not to clobber the status register directly via the commpage.
 	 */
 	if (cpu_has_msa && sr & ST0_CU1 && !(sr & ST0_FR) &&
-	    vcpu->arch.aux_inuse & KVM_MIPS_AUX_MSA)
+	    vcpu->arch.aux_inuse & (KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_ASX))
 		kvm_lose_fpu(vcpu);
 
 	/*
@@ -1575,7 +1650,7 @@ void kvm_own_msa(struct kvm_vcpu *vcpu)
 		 */
 		if (!(sr & ST0_FR) &&
 		    (vcpu->arch.aux_inuse & (KVM_MIPS_AUX_FPU |
-				KVM_MIPS_AUX_MSA)) == KVM_MIPS_AUX_FPU)
+			KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_ASX)) == KVM_MIPS_AUX_FPU)
 			kvm_lose_fpu(vcpu);
 
 		change_c0_status(ST0_CU1 | ST0_FR, sr);
@@ -1589,7 +1664,8 @@ void kvm_own_msa(struct kvm_vcpu *vcpu)
 	set_c0_config5(MIPS_CONF5_MSAEN);
 	enable_fpu_hazard();
 
-	switch (vcpu->arch.aux_inuse & (KVM_MIPS_AUX_FPU | KVM_MIPS_AUX_MSA)) {
+	switch (vcpu->arch.aux_inuse &
+			(KVM_MIPS_AUX_FPU | KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_ASX)) {
 	case KVM_MIPS_AUX_FPU:
 		/*
 		 * Guest FPU state already loaded, only restore upper MSA state
@@ -1612,6 +1688,110 @@ void kvm_own_msa(struct kvm_vcpu *vcpu)
 		break;
 	}
 
+#ifdef CONFIG_CPU_HAS_ASX
+	/* Check if the guest context whether ASX or not,
+	 * if ASX state live, retsore upper ASX state
+	 */
+	if ((read_gc0_config() & MIPS_CONF_LASXEN)) {
+		set_c0_config(MIPS_CONF_LASXEN);
+		__kvm_restore_asx_upper128(&vcpu->arch);
+		vcpu->arch.aux_inuse |= KVM_MIPS_AUX_ASX;
+	}
+#endif
+
+	preempt_enable();
+}
+#endif
+
+#ifdef CONFIG_CPU_HAS_ASX
+/* Enable ASX for guest and restore context */
+void kvm_own_asx(struct kvm_vcpu *vcpu)
+{
+	struct mips_coproc *cop0 = vcpu->arch.cop0;
+	unsigned int sr;
+
+	preempt_disable();
+
+	/*
+	 * Enable FPU if enabled in guest, since we're restoring FPU context
+	 * anyway. We set FR and FRE according to guest context.
+	 */
+	if (kvm_mips_guest_has_msa(&vcpu->arch)) {
+		sr = kvm_read_c0_guest_status(cop0);
+		/*
+		 * If FR=0 FPU state is already live, it is undefined how it
+		 * interacts with 256 vector state, so play it safe and save
+		 * it first.
+		 */
+		if (!(sr & ST0_FR) &&
+		((vcpu->arch.aux_inuse & (KVM_MIPS_AUX_FPU |
+		    KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_ASX)) == KVM_MIPS_AUX_MSA))
+			kvm_lose_fpu(vcpu);
+
+		/* Enable MSA for guest */
+		set_c0_config5(MIPS_CONF5_MSAEN);
+	}
+
+	/*
+	 * Enable FPU if enabled in guest, since we're restoring FPU context
+	 * anyway. We set FR and FRE according to guest context.
+	 */
+	if (kvm_mips_guest_has_fpu(&vcpu->arch)) {
+		sr = kvm_read_c0_guest_status(cop0);
+
+		/*
+		 * If FR=0 FPU state is already live, it is undefined how it
+		 * interacts with MSA state, so play it safe and save it first.
+		 */
+		if (!(sr & ST0_FR) &&
+		    (vcpu->arch.aux_inuse & (KVM_MIPS_AUX_FPU |
+				KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_ASX)) == KVM_MIPS_AUX_FPU)
+			kvm_lose_fpu(vcpu);
+
+		change_c0_status(ST0_CU1 | ST0_FR, sr);
+	}
+
+	/* Enable ASX for guest */
+	set_c0_config(MIPS_CONF_LASXEN);
+	enable_fpu_hazard();
+
+	switch (vcpu->arch.aux_inuse & (KVM_MIPS_AUX_FPU |
+			 KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_ASX)) {
+	case (KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_FPU):
+	case KVM_MIPS_AUX_MSA:
+		/*
+		 * Guest MSA state already loaded, only restore upper LASX state
+		 */
+		__kvm_restore_asx_upper128(&vcpu->arch);
+		vcpu->arch.aux_inuse |= KVM_MIPS_AUX_ASX;
+		trace_kvm_aux(vcpu, KVM_TRACE_AUX_RESTORE, KVM_TRACE_AUX_ASX);
+		break;
+	case KVM_MIPS_AUX_FPU:
+		/*
+		 * Guest FPU state already loaded, only restore 64~256 LASX state
+		 */
+		__kvm_restore_asx_upper192(&vcpu->arch);
+		vcpu->arch.aux_inuse |= KVM_MIPS_AUX_ASX;
+		if (kvm_mips_guest_has_msa(&vcpu->arch))
+			vcpu->arch.aux_inuse |= KVM_MIPS_AUX_MSA;
+		trace_kvm_aux(vcpu, KVM_TRACE_AUX_RESTORE, KVM_TRACE_AUX_ASX);
+		break;
+	case 0:
+		/* Neither FPU or MSA already active, restore full LASX state */
+		__kvm_restore_asx(&vcpu->arch);
+		vcpu->arch.aux_inuse |= KVM_MIPS_AUX_ASX;
+		if (kvm_mips_guest_has_msa(&vcpu->arch))
+			vcpu->arch.aux_inuse |= KVM_MIPS_AUX_MSA;
+		if (kvm_mips_guest_has_fpu(&vcpu->arch))
+			vcpu->arch.aux_inuse |= KVM_MIPS_AUX_FPU;
+		trace_kvm_aux(vcpu, KVM_TRACE_AUX_RESTORE,
+			      KVM_TRACE_AUX_FPU_MSA_ASX);
+		break;
+	default:
+		trace_kvm_aux(vcpu, KVM_TRACE_AUX_ENABLE, KVM_TRACE_AUX_ASX);
+		break;
+	}
+
 	preempt_enable();
 }
 #endif
@@ -1620,6 +1800,11 @@ void kvm_own_msa(struct kvm_vcpu *vcpu)
 void kvm_drop_fpu(struct kvm_vcpu *vcpu)
 {
 	preempt_disable();
+	if (cpu_has_asx && (vcpu->arch.aux_inuse & KVM_MIPS_AUX_ASX)) {
+		disable_asx();
+		trace_kvm_aux(vcpu, KVM_TRACE_AUX_DISCARD, KVM_TRACE_AUX_ASX);
+		vcpu->arch.aux_inuse &= ~KVM_MIPS_AUX_ASX;
+	}
 	if (cpu_has_msa && vcpu->arch.aux_inuse & KVM_MIPS_AUX_MSA) {
 		disable_msa();
 		trace_kvm_aux(vcpu, KVM_TRACE_AUX_DISCARD, KVM_TRACE_AUX_MSA);
@@ -1633,18 +1818,33 @@ void kvm_drop_fpu(struct kvm_vcpu *vcpu)
 	preempt_enable();
 }
 
-/* Save and disable FPU & MSA */
+/* Save and disable FPU & MSA & ASX */
 void kvm_lose_fpu(struct kvm_vcpu *vcpu)
 {
 	/*
-	 * With T&E, FPU & MSA get disabled in root context (hardware) when it
-	 * is disabled in guest context (software), but the register state in
+	 * With T&E, FPU & MSA & ASXget disabled in root context (hardware) when
+	 * it is disabled in guest context (software), but the register state in
 	 * the hardware may still be in use.
 	 * This is why we explicitly re-enable the hardware before saving.
 	 */
 
 	preempt_disable();
-	if (cpu_has_msa && vcpu->arch.aux_inuse & KVM_MIPS_AUX_MSA) {
+	if (cpu_has_asx && (vcpu->arch.aux_inuse & KVM_MIPS_AUX_ASX)) {
+
+		__kvm_save_asx(&vcpu->arch);
+		trace_kvm_aux(vcpu, KVM_TRACE_AUX_SAVE, KVM_TRACE_AUX_FPU_MSA_ASX);
+
+		/* Disable ASX & MAS & FPU */
+		disable_asx();
+		disable_msa();
+
+		if (vcpu->arch.aux_inuse & KVM_MIPS_AUX_FPU) {
+			clear_c0_status(ST0_CU1 | ST0_FR);
+			disable_fpu_hazard();
+		}
+		vcpu->arch.aux_inuse &= ~(KVM_MIPS_AUX_FPU |
+					 KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_ASX);
+	} else if (cpu_has_msa && vcpu->arch.aux_inuse & KVM_MIPS_AUX_MSA) {
 		if (!IS_ENABLED(CONFIG_KVM_MIPS_VZ)) {
 			set_c0_config5(MIPS_CONF5_MSAEN);
 			enable_fpu_hazard();

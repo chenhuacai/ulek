@@ -685,6 +685,10 @@ static int msa_get(struct task_struct *target,
 		/* Copy scalar FP context, fill the rest with 0xff */
 		err = copy_pad_fprs(target, regset, &pos, &count,
 				    &kbuf, &ubuf, 8);
+	} else if (!test_tsk_thread_flag(target, TIF_ASX_CTX_LIVE)) {
+		/* Copy classic MSA context, fill the rest with 0xff */
+		err = copy_pad_fprs(target, regset, &pos, &count,
+				    &kbuf, &ubuf, 16);
 	} else if (sizeof(target->thread.fpu.fpr[0]) == regset->size) {
 		/* Trivially copy the vector registers */
 		err = user_regset_copyout(&pos, &count, &kbuf, &ubuf,
@@ -739,6 +743,10 @@ static int msa_set(struct task_struct *target,
 	if (!err) {
 		target->thread.fpu.fcr31 = ctrl_regs.fcsr & ~FPU_CSR_ALL_X;
 		target->thread.fpu.msacsr = ctrl_regs.msacsr & ~MSA_CSR_CAUSEF;
+		if (regset->size >= 16)
+			set_tsk_thread_flag(target, TIF_MSA_CTX_LIVE);
+		if (regset->size == 32)
+			set_tsk_thread_flag(target, TIF_ASX_CTX_LIVE);
 	}
 
 	return err;
@@ -925,6 +933,9 @@ enum mips_regset {
 #ifdef CONFIG_CPU_HAS_MSA
 	REGSET_MSA,
 #endif
+#ifdef CONFIG_CPU_HAS_ASX
+	REGSET_ASX,
+#endif
 };
 
 struct pt_regs_offset {
@@ -1059,6 +1070,16 @@ static const struct user_regset mips_regsets[] = {
 		.set		= msa_set,
 	},
 #endif
+#ifdef CONFIG_CPU_HAS_ASX
+	[REGSET_ASX] = {
+		.core_note_type	= NT_MIPS_ASX,
+		.n		= NUM_FPU_REGS + 1,
+		.size		= 32,
+		.align		= 32,
+		.get		= msa_get,
+		.set		= msa_set,
+	},
+#endif
 };
 
 static const struct user_regset_view user_mips_view = {
@@ -1115,6 +1136,16 @@ static const struct user_regset mips64_regsets[] = {
 		.n		= NUM_FPU_REGS + 1,
 		.size		= 16,
 		.align		= 16,
+		.get		= msa_get,
+		.set		= msa_set,
+	},
+#endif
+#ifdef CONFIG_CPU_HAS_ASX
+	[REGSET_ASX] = {
+		.core_note_type	= NT_MIPS_ASX,
+		.n		= NUM_FPU_REGS + 1,
+		.size		= 32,
+		.align		= 32,
 		.get		= msa_get,
 		.set		= msa_set,
 	},

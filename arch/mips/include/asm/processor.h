@@ -85,7 +85,9 @@ extern unsigned long mips_stack_top(void);
 
 #define NUM_FPU_REGS	32
 
-#ifdef CONFIG_CPU_HAS_MSA
+#if defined(CONFIG_CPU_HAS_ASX)
+# define FPU_REG_WIDTH	256
+#elif defined(CONFIG_CPU_HAS_MSA)
 # define FPU_REG_WIDTH	128
 #else
 # define FPU_REG_WIDTH	64
@@ -228,7 +230,10 @@ typedef struct {
 	unsigned long seg;
 } mm_segment_t;
 
-#ifdef CONFIG_CPU_HAS_MSA
+#if defined(CONFIG_CPU_HAS_ASX)
+# define ARCH_MIN_TASKALIGN	32
+# define FPU_ALIGN		__aligned(32)
+#elif defined(CONFIG_CPU_HAS_MSA)
 # define ARCH_MIN_TASKALIGN	16
 # define FPU_ALIGN		__aligned(16)
 #else

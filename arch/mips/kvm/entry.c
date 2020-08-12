@@ -66,6 +66,7 @@
 #define C0_EPC		14, 0
 #define C0_EBASE	15, 1
 #define C0_CONFIG5	16, 5
+#define C0_DIAG1	22, 1
 #define C0_DDATA_LO	28, 3
 #define C0_ERROREPC	30, 0
 
@@ -675,6 +676,9 @@ void *kvm_mips_build_exit(void *addr)
 
 	uasm_i_mfc0(&p, K0, C0_CAUSE);
 	uasm_i_sw(&p, K0, offsetof(struct kvm_vcpu_arch, host_cp0_cause), K1);
+
+	uasm_i_mfc0(&p, K0, C0_DIAG1);
+	uasm_i_sw(&p, K0, offsetof(struct kvm_vcpu_arch, host_cp0_diag1), K1);
 
 	if (cpu_has_badinstr) {
 		uasm_i_mfc0(&p, K0, C0_BADINSTR);

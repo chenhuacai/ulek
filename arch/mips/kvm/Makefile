@@ -7,6 +7,7 @@ common-objs-y = $(addprefix ../../../virt/kvm/, kvm_main.o coalesced_mmio.o even
 EXTRA_CFLAGS += -Ivirt/kvm -Iarch/mips/kvm
 
 common-objs-$(CONFIG_CPU_HAS_MSA) += msa.o
+common-objs-$(CONFIG_CPU_HAS_ASX) += asx.o
 
 kvm-objs := $(common-objs-y) mips.o emulate.o entry.o \
 	    interrupt.o stats.o commpage.o \

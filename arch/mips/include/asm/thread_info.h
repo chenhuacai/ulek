@@ -117,6 +117,7 @@ static inline struct thread_info *current_thread_info(void)
 #define TIF_UPROBE		6	/* breakpointed or singlestepping */
 #define TIF_RESTORE_SIGMASK	9	/* restore signal mask in do_signal() */
 #define TIF_USEDFPU		16	/* FPU was used by this task this quantum (SMP) */
+#define TIF_ASX_CTX_LIVE	17	/* ASX context must be preserved */
 #define TIF_MEMDIE		18	/* is terminating due to OOM killer */
 #define TIF_NOHZ		19	/* in adaptive nohz mode */
 #define TIF_FIXADE		20	/* Fix address errors in software */
@@ -151,6 +152,7 @@ static inline struct thread_info *current_thread_info(void)
 #define _TIF_HYBRID_FPREGS	(1<<TIF_HYBRID_FPREGS)
 #define _TIF_USEDMSA		(1<<TIF_USEDMSA)
 #define _TIF_MSA_CTX_LIVE	(1<<TIF_MSA_CTX_LIVE)
+#define _TIF_ASX_CTX_LIVE	(1<<TIF_ASX_CTX_LIVE)
 #define _TIF_SYSCALL_TRACEPOINT	(1<<TIF_SYSCALL_TRACEPOINT)
 
 #define _TIF_WORK_SYSCALL_ENTRY	(_TIF_NOHZ | _TIF_SYSCALL_TRACE |	\

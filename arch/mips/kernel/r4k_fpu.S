@@ -408,6 +408,148 @@ LEAF(_restore_msa_all_upper)
 
 #endif /* CONFIG_CPU_HAS_MSA */
 
+#ifdef CONFIG_CPU_HAS_ASX
+
+/*
+ * Save a thread's ASX vector context.
+ */
+LEAF(_save_asx)
+EXPORT_SYMBOL(_save_asx)
+	.set	push
+	.set	noat
+	.set	noreorder
+	.set	msa
+	SET_HARDFLOAT
+	cfmsa1
+	sw	$1, THREAD_MSA_CSR(a0)
+	xvst_b	0, THREAD_FPR0, a0
+	xvst_b	1, THREAD_FPR1, a0
+	xvst_b	2, THREAD_FPR2, a0
+	xvst_b	3, THREAD_FPR3, a0
+	xvst_b	4, THREAD_FPR4, a0
+	xvst_b	5, THREAD_FPR5, a0
+	xvst_b	6, THREAD_FPR6, a0
+	xvst_b	7, THREAD_FPR7, a0
+	xvst_b	8, THREAD_FPR8, a0
+	xvst_b	9, THREAD_FPR9, a0
+	xvst_b	10, THREAD_FPR10, a0
+	xvst_b	11, THREAD_FPR11, a0
+	xvst_b	12, THREAD_FPR12, a0
+	xvst_b	13, THREAD_FPR13, a0
+	xvst_b	14, THREAD_FPR14, a0
+	xvst_b	15, THREAD_FPR15, a0
+	xvst_b	16, THREAD_FPR16, a0
+	xvst_b	17, THREAD_FPR17, a0
+	xvst_b	18, THREAD_FPR18, a0
+	xvst_b	19, THREAD_FPR19, a0
+	xvst_b	20, THREAD_FPR20, a0
+	xvst_b	21, THREAD_FPR21, a0
+	xvst_b	22, THREAD_FPR22, a0
+	xvst_b	23, THREAD_FPR23, a0
+	xvst_b	24, THREAD_FPR24, a0
+	xvst_b	25, THREAD_FPR25, a0
+	xvst_b	26, THREAD_FPR26, a0
+	xvst_b	27, THREAD_FPR27, a0
+	xvst_b	28, THREAD_FPR28, a0
+	xvst_b	29, THREAD_FPR29, a0
+	xvst_b	30, THREAD_FPR30, a0
+	xvst_b	31, THREAD_FPR31, a0
+	jr	ra
+	 nop
+END(_save_asx)
+
+/*
+ * Restore a thread's ASX vector context.
+ */
+LEAF(_restore_asx)
+	.set	push
+	.set	noat
+	.set	noreorder
+	.set	msa
+	SET_HARDFLOAT
+	lw	$1, THREAD_MSA_CSR(a0)
+	ctmsa1
+	.set	pop
+	xvld_b	0, THREAD_FPR0, a0
+	xvld_b	1, THREAD_FPR1, a0
+	xvld_b	2, THREAD_FPR2, a0
+	xvld_b	3, THREAD_FPR3, a0
+	xvld_b	4, THREAD_FPR4, a0
+	xvld_b	5, THREAD_FPR5, a0
+	xvld_b	6, THREAD_FPR6, a0
+	xvld_b	7, THREAD_FPR7, a0
+	xvld_b	8, THREAD_FPR8, a0
+	xvld_b	9, THREAD_FPR9, a0
+	xvld_b	10, THREAD_FPR10, a0
+	xvld_b	11, THREAD_FPR11, a0
+	xvld_b	12, THREAD_FPR12, a0
+	xvld_b	13, THREAD_FPR13, a0
+	xvld_b	14, THREAD_FPR14, a0
+	xvld_b	15, THREAD_FPR15, a0
+	xvld_b	16, THREAD_FPR16, a0
+	xvld_b	17, THREAD_FPR17, a0
+	xvld_b	18, THREAD_FPR18, a0
+	xvld_b	19, THREAD_FPR19, a0
+	xvld_b	20, THREAD_FPR20, a0
+	xvld_b	21, THREAD_FPR21, a0
+	xvld_b	22, THREAD_FPR22, a0
+	xvld_b	23, THREAD_FPR23, a0
+	xvld_b	24, THREAD_FPR24, a0
+	xvld_b	25, THREAD_FPR25, a0
+	xvld_b	26, THREAD_FPR26, a0
+	xvld_b	27, THREAD_FPR27, a0
+	xvld_b	28, THREAD_FPR28, a0
+	xvld_b	29, THREAD_FPR29, a0
+	xvld_b	30, THREAD_FPR30, a0
+	xvld_b	31, THREAD_FPR31, a0
+	jr	ra
+	 nop
+END(_restore_asx)
+
+LEAF(_init_asx_upper)
+	.set	push
+	.set	noat
+	.set	noreorder
+	SET_HARDFLOAT
+	not	$1, zero
+	asx_init_upper	0
+	xvseli_d 0xc, 0, 1
+	xvseli_d 0xc, 0, 2
+	xvseli_d 0xc, 0, 3
+	xvseli_d 0xc, 0, 4
+	xvseli_d 0xc, 0, 5
+	xvseli_d 0xc, 0, 6
+	xvseli_d 0xc, 0, 7
+	xvseli_d 0xc, 0, 8
+	xvseli_d 0xc, 0, 9
+	xvseli_d 0xc, 0, 10
+	xvseli_d 0xc, 0, 11
+	xvseli_d 0xc, 0, 12
+	xvseli_d 0xc, 0, 13
+	xvseli_d 0xc, 0, 14
+	xvseli_d 0xc, 0, 15
+	xvseli_d 0xc, 0, 16
+	xvseli_d 0xc, 0, 17
+	xvseli_d 0xc, 0, 18
+	xvseli_d 0xc, 0, 19
+	xvseli_d 0xc, 0, 20
+	xvseli_d 0xc, 0, 21
+	xvseli_d 0xc, 0, 22
+	xvseli_d 0xc, 0, 23
+	xvseli_d 0xc, 0, 24
+	xvseli_d 0xc, 0, 25
+	xvseli_d 0xc, 0, 26
+	xvseli_d 0xc, 0, 27
+	xvseli_d 0xc, 0, 28
+	xvseli_d 0xc, 0, 29
+	xvseli_d 0xc, 0, 30
+	jr	ra
+	 xvseli_d 0xc, 0, 31
+	.set	pop
+END(_init_asx_upper)
+
+#endif /* CONFIG_CPU_HAS_ASX */
+
 	.set	reorder
 
 	.type	fault, @function

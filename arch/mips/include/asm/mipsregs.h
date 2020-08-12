@@ -568,6 +568,7 @@
 #define MIPS_CONF_MT_FTLB	(_ULCAST_(4) <<  7)
 #define MIPS_CONF_AR		(_ULCAST_(7) << 10)
 #define MIPS_CONF_AT		(_ULCAST_(3) << 13)
+#define MIPS_CONF_LASXEN	(_ULCAST_(1) << 19)
 #define MIPS_CONF_M		(_ULCAST_(1) << 31)
 
 /*
@@ -685,6 +686,8 @@
 #define MIPS_CONF6_SYND		(_ULCAST_(1) << 13)
 /* proAptiv FTLB on/off bit */
 #define MIPS_CONF6_FTLBEN	(_ULCAST_(1) << 15)
+/* Loongson-3's indicator of ASX mode */
+#define MIPS_CONF6_LASXMODE	(_ULCAST_(1) << 21)
 /* Loongson-3 FTLB on/off bit */
 #define MIPS_CONF6_FTLBDIS	(_ULCAST_(1) << 22)
 /* FTLB probability bits */
@@ -1015,6 +1018,8 @@
 /* Loongson-specific exception code (GSExcCode) */
 #define LOONGSON_DIAG1_EXCCODE_SHIFT	2
 #define LOONGSON_DIAG1_EXCCODE		GENMASK(6, 2)
+#define  GSEXCCODE_LASXDIS		7
+#define  GSEXCCODE_LBTDIS		8
 
 /* CvmCtl register field definitions */
 #define CVMCTL_IPPCI_SHIFT	7

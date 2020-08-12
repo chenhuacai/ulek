@@ -506,6 +506,16 @@
 	.endm
 #endif
 
+#ifdef CONFIG_CPU_HAS_MSA
+	.macro	cfmsa1
+	.word	0x787e0059 | (1 << 11)
+	.endm
+
+	.macro	ctmsa1
+	.word	0x783e0819 | (1 << 6)
+	.endm
+#endif
+
 #ifdef TOOLCHAIN_SUPPORTS_MSA
 #define FPR_BASE_OFFS	THREAD_FPR0
 #define FPR_BASE	$1
@@ -652,6 +662,49 @@
 	msa_init_upper	30
 	msa_init_upper	31
 	.set	pop
+	.endm
+
+/*
+ * Helper macros for Loongson ASX instruction encodings.
+ */
+	.macro	xvld_b	wd, off, base
+	.set	push
+	.set	noat
+	SET_HARDFLOAT
+	PTR_ADDU $1, \base, \off
+	insn_if_mips 0xc8000819 | (\wd << 6)
+	.set	pop
+	.endm
+
+	.macro	xvst_b	wd, off, base
+	.set	push
+	.set	noat
+	SET_HARDFLOAT
+	PTR_ADDU $1, \base, \off
+	insn_if_mips 0xe8000819 | (\wd << 6)
+	.set	pop
+	.endm
+
+	.macro xinsert_d wd, n
+	.set	push
+	.set	noat
+	SET_HARDFLOAT
+	insn_if_mips 0x79380819 | (\n << 16) | (\wd << 6)
+	.set	pop
+	.endm
+
+	.macro	xvseli_d patt, ws, wd
+	.set	push
+	.set	noat
+	.word	0xed00000a | (\wd << 6) | (\ws << 11) | (\patt << 16)
+	.set	pop
+	.endm
+
+	.macro	asx_init_upper wd
+	.set	push
+	.set	noat
+	xinsert_d \wd, 2
+	xinsert_d \wd, 3
 	.endm
 
 #endif /* _ASM_ASMMACRO_H */

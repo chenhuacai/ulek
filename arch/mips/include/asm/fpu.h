@@ -165,10 +165,14 @@ static inline void lose_fpu_inatomic(int save, struct task_struct *tsk)
 {
 	if (is_msa_enabled()) {
 		if (save) {
-			save_msa(tsk);
+			if (is_asx_enabled())
+				save_asx(tsk);
+			else
+				save_msa(tsk);
 			tsk->thread.fpu.fcr31 =
 					read_32bit_cp1_register(CP1_STATUS);
 		}
+		disable_asx();
 		disable_msa();
 		clear_tsk_thread_flag(tsk, TIF_USEDMSA);
 		__disable_fpu();

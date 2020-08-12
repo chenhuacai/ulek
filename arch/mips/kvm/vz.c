@@ -81,7 +81,11 @@ static inline void kvm_vz_write_gc0_ebase(long v)
 
 static inline unsigned int kvm_vz_config_guest_wrmask(struct kvm_vcpu *vcpu)
 {
+#ifndef CONFIG_CPU_LOONGSON3
 	return CONF_CM_CMASK;
+#else
+	return CONF_CM_CMASK | MIPS_CONF_LASXEN;
+#endif
 }
 
 static inline unsigned int kvm_vz_config1_guest_wrmask(struct kvm_vcpu *vcpu)
@@ -129,7 +133,13 @@ static inline unsigned int kvm_vz_config5_guest_wrmask(struct kvm_vcpu *vcpu)
 
 static inline unsigned int kvm_vz_config6_guest_wrmask(struct kvm_vcpu *vcpu)
 {
-	return MIPS_CONF6_INTIMER | MIPS_CONF6_EXTIMER | MIPS_CONF6_SYND;
+	unsigned int mask = MIPS_CONF6_INTIMER | MIPS_CONF6_EXTIMER | MIPS_CONF6_SYND;
+
+	if (kvm_mips_guest_has_asx(&vcpu->arch))
+		mask |= MIPS_CONF6_LASXMODE;
+
+	return mask;
+
 }
 
 /*
@@ -1171,7 +1181,7 @@ static enum emulation_result kvm_vz_gpsi_lwc2(union mips_instruction inst,
 		case LOONGSON_CFG1:
 			hostcfg &= (LOONGSON_CFG1_FP | LOONGSON_CFG1_MMI |
 				    LOONGSON_CFG1_MSA1 | LOONGSON_CFG1_MSA2 |
-				    LOONGSON_CFG1_SFBP);
+				    LOONGSON_CFG1_LASX | LOONGSON_CFG1_SFBP);
 			vcpu->arch.gprs[rd] = hostcfg;
 			break;
 		case LOONGSON_CFG2:
@@ -1353,7 +1363,7 @@ static enum emulation_result kvm_trap_vz_handle_gsfc(u32 cause, u32 *opc,
 			 * safe and save it first.
 			 */
 			if (change & ST0_CU1 && !(val & ST0_FR) &&
-			    vcpu->arch.aux_inuse & KVM_MIPS_AUX_MSA)
+			    vcpu->arch.aux_inuse & (KVM_MIPS_AUX_MSA | KVM_MIPS_AUX_ASX))
 				kvm_lose_fpu(vcpu);
 
 			write_gc0_status(val);
@@ -1381,6 +1391,13 @@ static enum emulation_result kvm_trap_vz_handle_gsfc(u32 cause, u32 *opc,
 			write_gc0_cause(old_cause ^ change);
 		} else if ((rd == MIPS_CP0_STATUS) && (sel == 1)) { /* IntCtl */
 			write_gc0_intctl(val);
+		} else if ((rd == MIPS_CP0_CONFIG) && (sel == 0)) {
+			/* Handle changes in ASX modes */
+			old_val = read_gc0_config();
+			change = val ^ old_val;
+			val = old_val ^
+				(change & kvm_vz_config_guest_wrmask(vcpu));
+			write_gc0_config5(val);
 		} else if ((rd == MIPS_CP0_CONFIG) && (sel == 5)) {
 			old_val = read_gc0_config5();
 			change = val ^ old_val;
@@ -1613,6 +1630,37 @@ static int kvm_trap_vz_handle_msa_disabled(struct kvm_vcpu *vcpu)
 	}
 
 	kvm_own_msa(vcpu);
+
+	return RESUME_GUEST;
+}
+
+/**
+ * kvm_trap_vz_handle_asx_disabled() - Guest used ASX while disabled in root.
+ * @vcpu:	Virtual CPU context.
+ *
+ * Handle when the guest attempts to use ASX when it is disabled in the root
+ * context.
+ */
+static int kvm_trap_vz_handle_asx_disabled(struct kvm_vcpu *vcpu)
+{
+	struct kvm_run *run = vcpu->run;
+
+	/*
+	 * If ASX not present or not exposed to guest or FR=0, the ASX operation
+	 * should have been treated as a reserved instruction!
+	 * Same if CU1=1, FR=0.
+	 * If ASX already in use, we shouldn't get this at all.
+	 */
+	if (!kvm_mips_guest_has_asx(&vcpu->arch) ||
+	    (read_gc0_status() & (ST0_CU1 | ST0_FR)) == ST0_CU1 ||
+	    !(read_gc0_config() & MIPS_CONF_LASXEN) ||
+	    !(read_gc0_config5() & MIPS_CONF5_MSAEN) ||
+	    vcpu->arch.aux_inuse & KVM_MIPS_AUX_ASX) {
+		run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
+		return RESUME_HOST;
+	}
+
+	kvm_own_asx(vcpu);
 
 	return RESUME_GUEST;
 }
@@ -3283,6 +3331,7 @@ static struct kvm_mips_callbacks kvm_vz_callbacks = {
 	.handle_res_inst = kvm_trap_vz_no_handler,
 	.handle_break = kvm_trap_vz_no_handler,
 	.handle_msa_disabled = kvm_trap_vz_handle_msa_disabled,
+	.handle_asx_disabled = kvm_trap_vz_handle_asx_disabled,
 	.handle_guest_exit = kvm_trap_vz_handle_guest_exit,
 
 	.hardware_enable = kvm_vz_hardware_enable,
