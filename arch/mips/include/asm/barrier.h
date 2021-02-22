@@ -244,6 +244,16 @@
 #define __smp_mb__before_atomic()	__smp_mb__before_llsc()
 #define __smp_mb__after_atomic()	smp_llsc_mb()
 
+#ifdef CONFIG_CPU_LOONGSON3
+#define __smp_store_release(p, v)					\
+do {									\
+	compiletime_assert_atomic_type(*p);				\
+	__smp_mb();							\
+	WRITE_ONCE(*p, v);						\
+	__wbflush();							\
+} while (0)
+#endif
+
 /*
  * Some Loongson 3 CPUs have a bug wherein execution of a memory access (load,
  * store or prefetch) in between an LL & SC can cause the SC instruction to
