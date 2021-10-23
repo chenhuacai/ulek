@@ -958,6 +958,10 @@ static void quirk_usb_disable_ehci(struct pci_dev *pdev)
 	 * booting from USB disk or using a usb keyboard
 	 */
 	hcc_params = readl(base + EHCI_HCC_PARAMS);
+	if (pdev->vendor == PCI_VENDOR_ID_LOONGSON &&
+	    pdev->device == PCI_DEVICE_ID_LOONGSON_EHCI)
+		hcc_params &= ~(0xffL << 8);
+
 	offset = (hcc_params >> 8) & 0xff;
 	while (offset && --count) {
 		pci_read_config_dword(pdev, offset, &cap);
